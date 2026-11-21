@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image Administration</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo" aria-hidden="true"></div>
+    <div><h1 id="projectName">Loading…</h1><p id="projectDesc"></p></div>
+  </div>
+  <div class="overall" id="overall"></div>
+</header>
+<div id="banner"></div>
+<div class="layout">
+  <nav class="side" id="tree" aria-label="Folders"></nav>
+  <main class="main">
+    <div class="crumb" id="crumb"></div>
+    <div class="toolbar">
+      <div class="chips" id="filters" role="tablist"></div>
+      <input id="search" type="search" placeholder="Search id, description, tag…" aria-label="Search sprites">
+    </div>
+    <div class="grid" id="grid"></div>
+    <p class="hint">Tip: drop one or many image files anywhere on the page. Files are matched to sprites by file name (e.g. <code>stone.png</code> → <code>tiles/floor/stone</code>); drop onto a specific card to choose explicitly.</p>
+  </main>
+</div>
+<input type="file" id="picker" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" hidden>
+<div class="dropveil" id="veil"><div>Drop images to deliver them</div></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

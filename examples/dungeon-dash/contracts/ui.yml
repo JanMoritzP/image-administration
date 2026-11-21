@@ -1,0 +1,30 @@
+contract: "1.0"
+
+# File-level defaults: only apply to sprites in THIS file (layered over the root defaults).
+defaults:
+  spec:
+    alpha: any
+
+sprites:
+  - id: ui/hud/heart-full
+    description: Red pixel heart, shown in the health bar when a hit point is available.
+    spec: { width: 16, height: 16, alpha: required }
+    target: ui/heart_full.png
+
+  - id: ui/hud/heart-empty
+    description: Outline-only grey heart for lost hit points.
+    spec: { width: 16, height: 16, alpha: required }
+    target: ui/heart_empty.png
+
+  - id: ui/menu/title-logo
+    description: The "DUNGEON DASH" logo in chunky gold letters with a dark outline, for the title screen.
+    spec: { minWidth: 256, maxWidth: 512, aspect: "4:1", maxBytes: 51200 }
+    targets:
+      - path: ui/title_logo.png
+      - path: web/press-kit/logo.png
+        label: Press kit
+
+  - id: ui/menu/background
+    description: Full-screen title background, a dark corridor lit by torches. No text.
+    spec: { width: 1280, height: 720, formats: [png, webp], alpha: forbidden }
+    target: ui/menu_background.webp

@@ -1,0 +1,32 @@
+contract: "1.0"
+
+# One entry, 4 directions x 4 frames = 16 sprites. {dir} and {frame:02} are filled in per combination.
+sprites:
+  - id: characters/hero/walk-{dir}-{frame:02}
+    title: Hero walk {dir} frame {frame}
+    description: >
+      The hero (a short wizard with a blue hat and a brown cloak) walking {dir}.
+      Frame {frame} of 4 in a looping walk cycle; feet should touch the bottom edge.
+    matrix:
+      dir: [down, up, left, right]
+      frame: "0..3"
+    target: characters/hero/walk_{dir}_{frame:02}.png
+
+  - id: characters/hero/portrait
+    description: Close-up face of the hero for dialogue boxes, looking slightly to the right.
+    spec: { width: 64, height: 64 }     # overrides the folder default of 32x32
+    targets:
+      - path: characters/hero/portrait.png
+      - path: ui/dialogue/hero_portrait.png     # delivered to two places at once
+        label: Dialogue box copy
+
+  - id: characters/slime/idle-{frame}
+    description: A green slime blob, frame {frame} of 2 of its wobbling idle animation.
+    matrix: { frame: [0, 1] }
+    target: characters/slime/idle_{frame}.png
+
+  - id: characters/skeleton/idle
+    description: A skeleton warrior holding a rusty sword, facing the camera.
+    target: characters/skeleton/idle.png
+    required: false                       # nice to have, does not block the progress bar
+    notes: Cut feature if we run out of time before the beta.
