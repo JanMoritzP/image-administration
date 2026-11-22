@@ -112,6 +112,13 @@ function specChips(sp) {
   return out.map((x) => `<span>${esc(x)}</span>`).join('');
 }
 
+function deliveryLine(sp) {
+  const d = state.delivery?.[sp.id];
+  if (!d) return '';
+  const txt = { delivered: '✓ pushed to plugin', pending: '… pushing to plugin', failed: `✕ push failed (${esc(d.error ?? 'error')})` }[d.status];
+  return `<p class="notes">${txt}</p>`;
+}
+
 function card(sp) {
   const present = sp.targets.find((t) => t.exists);
   const label = { available: 'Available', missing: 'Missing', partial: 'Partial', invalid: 'Invalid' }[sp.status];
@@ -133,6 +140,7 @@ function card(sp) {
       <div class="specs">${specChips(sp)}</div>
       <ul class="targets">${targets}</ul>
       ${issues.length ? `<ul class="issues">${issues.map((i) => `<li class="${i.level === 'warn' ? 'w' : ''}">${esc(i.message)}${sp.targets.length > 1 ? ` <code>${esc(i.target)}</code>` : ''}</li>`).join('')}</ul>` : ''}
+      ${deliveryLine(sp)}
       ${sp.notes ? `<p class="notes">${esc(sp.notes)}</p>` : ''}
       ${sp.tags.length ? `<div class="tags">${sp.tags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
       <div class="actions">

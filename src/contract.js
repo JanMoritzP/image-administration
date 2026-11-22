@@ -6,6 +6,8 @@ import YAML from 'yaml';
 import { FORMATS, EXT_FORMAT } from './formats.js';
 
 export const SPEC_VERSION = '1.0';
+/** Sprites requested through the HTTP API live in this file next to the root manifest (auto-included by the loader). */
+export const PLUGIN_FILE = 'plugin.requests.json';
 export const MANIFEST_NAMES = ['sprites.contract.yml', 'sprites.contract.yaml', 'sprites.contract.json'];
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*(\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/;
@@ -314,6 +316,9 @@ export function loadContract(input) {
   };
 
   processFile(manifest, true, 0);
+  // Sprites requested through the HTTP API (see docs/PLUGIN_INTEGRATION.md) are always part of the contract.
+  const pluginFile = path.join(manifestDir, PLUGIN_FILE);
+  if (!result.fatal && fs.existsSync(pluginFile) && !visited.has(pluginFile)) processFile(pluginFile, false, 1);
   if (result.fatal || !result.root) { result.ok = false; return result; }
 
   // Pass 2: finalize sprites (needs every folder + the root layer).

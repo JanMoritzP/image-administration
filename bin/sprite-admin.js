@@ -11,6 +11,9 @@ const HELP = `sprite-admin - manage the sprites an app needs, driven by a Sprite
 
 Usage:
   sprite-admin [serve] [contract] [--port 4870] [--host 127.0.0.1]   open the admin UI
+        --token <t>          enable the plugin API (bearer token; or env SPRITE_ADMIN_TOKEN)
+        --webhook <url>      push every uploaded image to this URL (or env SPRITE_ADMIN_WEBHOOK)
+        --webhook-token <t>  bearer token sent to the webhook (or env SPRITE_ADMIN_WEBHOOK_TOKEN)
   sprite-admin validate [contract]                                   check the contract files (exit 1 on errors)
   sprite-admin status [contract] [--json] [--missing] [--check]      progress report
         --json     machine-readable report (see docs/CONTRACT.md "Status report")
@@ -25,7 +28,7 @@ const args = process.argv.slice(2);
 const flags = {};
 const pos = [];
 for (let i = 0; i < args.length; i++) {
-  if (args[i].startsWith('--')) { const k = args[i].slice(2); const next = args[i + 1]; if (['port', 'host'].includes(k)) { flags[k] = next; i++; } else flags[k] = true; }
+  if (args[i].startsWith('--')) { const k = args[i].slice(2); const next = args[i + 1]; if (['port', 'host', 'token', 'webhook', 'webhook-token'].includes(k)) { flags[k] = next; i++; } else flags[k] = true; }
   else pos.push(args[i]);
 }
 const commands = ['serve', 'validate', 'status', 'init', 'schema', 'help'];
@@ -94,6 +97,9 @@ const host = flags.host ?? '127.0.0.1';
 const first = loadContract(manifest);
 const errs = first.diagnostics.filter((d) => d.level === 'error');
 if (errs.length) { printDiagnostics(first.diagnostics, base); console.log('\nThe contract has problems; the UI will show them and keep running.\n'); }
-createServer(manifest, { host }).listen(port, host, () => {
-  console.log(`Sprite admin for "${first.project?.name}" running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}\nContract: ${manifest}\nPress Ctrl+C to stop.`);
+const token = flags.token ?? process.env.SPRITE_ADMIN_TOKEN;
+const webhookUrl = flags.webhook ?? process.env.SPRITE_ADMIN_WEBHOOK;
+const webhook = webhookUrl ? { url: webhookUrl, token: flags['webhook-token'] ?? process.env.SPRITE_ADMIN_WEBHOOK_TOKEN } : undefined;
+createServer(manifest, { host, token, webhook }).listen(port, host, () => {
+  console.log(`Sprite admin for "${first.project?.name}" running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}\nContract: ${manifest}\nPlugin API: ${token ? 'enabled' : 'disabled (set --token)'}${webhook ? `, pushing images to ${webhook.url}` : ''}\nPress Ctrl+C to stop.`);
 }).on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? `Port ${port} is in use, try --port <n>` : e.message); process.exit(1); });

@@ -6,6 +6,8 @@ import { loadContract } from './contract.js';
 import { evaluateContract } from './status.js';
 import { acceptUpload, syncTargets, MAX_UPLOAD_BYTES } from './store.js';
 import { MIME } from './formats.js';
+import { probeImage } from './images.js';
+import { tokenOk, sha256, submitRequests, readEvents, appendEvent, createDelivery } from './integration.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const STATIC_MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
@@ -25,10 +27,21 @@ function readBody(req, limit) {
   });
 }
 
-/** @param {string} input path to the manifest file or the directory that holds it */
-export function createServer(input, { host = '127.0.0.1' } = {}) {
+// Endpoints for the plugin / other servers. They need a bearer token and are disabled when none is configured.
+const PLUGIN_ROUTES = new Set(['/api/requests', '/api/events', '/api/file']);
+const JSON_LIMIT = 1024 * 1024;
+
+/**
+ * @param {string} input path to the manifest file or the directory that holds it
+ * @param {{host?: string, token?: string, webhook?: {url: string, token?: string, retries?: number, baseDelayMs?: number}}} [opts]
+ *   token: bearer token for the plugin API; webhook: where every delivered image is pushed to
+ */
+export function createServer(input, { host = '127.0.0.1', token, webhook } = {}) {
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
   const fresh = () => loadContract(input);
+  const delivery = webhook?.url ? createDelivery(webhook) : null;
+  const eventsFile = (c) => path.join(c.root, '.sprite-admin', 'events.jsonl');
+  const firstFile = (c, id) => c.sprites.find((s) => s.id === id)?.targets.find((t) => fs.existsSync(t.abs));
 
   return http.createServer(async (req, res) => {
     try {
@@ -38,22 +51,57 @@ export function createServer(input, { host = '127.0.0.1' } = {}) {
       if (loopback && !['localhost', '127.0.0.1', '::1'].includes(hostName)) return send(res, 403, { error: 'forbidden host' });
 
       if (url.pathname.startsWith('/api/')) {
-        if (req.method === 'POST' && req.headers['x-sprite-admin'] !== '1') return send(res, 403, { error: 'missing X-Sprite-Admin header' });
+        if (PLUGIN_ROUTES.has(url.pathname)) {
+          if (!token) return send(res, 503, { error: 'plugin API is disabled: start the server with --token or SPRITE_ADMIN_TOKEN' });
+          if (!tokenOk(req.headers.authorization, token)) return send(res, 401, { error: 'missing or invalid bearer token' }, { 'WWW-Authenticate': 'Bearer' });
+        } else if (req.method === 'POST' && req.headers['x-sprite-admin'] !== '1') return send(res, 403, { error: 'missing X-Sprite-Admin header' });
         const id = url.searchParams.get('id') ?? '';
 
-        if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, evaluateContract(fresh()));
+        if (req.method === 'GET' && url.pathname === '/api/state') {
+          const state = evaluateContract(fresh());
+          if (delivery) state.delivery = delivery.status();
+          return send(res, 200, state);
+        }
+
+        if (req.method === 'POST' && url.pathname === '/api/requests') {
+          const manifest = fresh().manifest;
+          if (!manifest) return send(res, 500, { ok: false, errors: ['no contract manifest'] });
+          let payload;
+          try { payload = JSON.parse((await readBody(req, JSON_LIMIT)).toString('utf8')); } catch (e) { if (e.status) throw e; return send(res, 400, { ok: false, errors: ['body is not valid JSON'] }); }
+          const r = submitRequests(manifest, payload);
+          return send(res, r.status, r);
+        }
+
+        if (req.method === 'GET' && url.pathname === '/api/events') {
+          const c = fresh();
+          if (!c.root) return send(res, 500, { error: 'contract could not be loaded' });
+          const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
+          const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get('limit')) || 100));
+          return send(res, 200, { events: readEvents(eventsFile(c), since, limit) });
+        }
+
+        if (req.method === 'GET' && url.pathname === '/api/file') {
+          const target = firstFile(fresh(), id);
+          if (!target) return send(res, 404, { error: 'no image' });
+          const buf = fs.readFileSync(target.abs);
+          return send(res, 200, buf, { 'Content-Type': MIME[target.format], 'X-Sprite-Sha256': sha256(buf), 'Content-Security-Policy': "default-src 'none'; sandbox" });
+        }
 
         if (req.method === 'GET' && url.pathname === '/api/image') {
-          const c = fresh();
-          const sprite = c.sprites.find((s) => s.id === id);
-          const target = sprite?.targets.find((t) => fs.existsSync(t.abs));
+          const target = firstFile(fresh(), id);
           if (!target) return send(res, 404, { error: 'no image' });
           return send(res, 200, fs.readFileSync(target.abs), { 'Content-Type': MIME[target.format], 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
         }
 
         if (req.method === 'POST' && url.pathname === '/api/upload') {
           const buf = await readBody(req, MAX_UPLOAD_BYTES);
-          const r = acceptUpload(fresh(), id, buf);
+          const c = fresh();
+          const r = acceptUpload(c, id, buf);
+          if (r.ok) {
+            const info = probeImage(buf);
+            const event = appendEvent(eventsFile(c), { type: 'image.delivered', id, format: info.format, bytes: buf.length, sha256: sha256(buf), targets: c.sprites.find((s) => s.id === id).targets.map((t) => t.path) });
+            delivery?.deliver(event, buf, MIME[info.format]);
+          }
           return send(res, r.status, r);
         }
 
