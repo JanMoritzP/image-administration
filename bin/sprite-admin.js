@@ -40,10 +40,11 @@ const publicFiles = !!flags['public-files'] || ['1', 'true'].includes(env.PUBLIC
 const maxMb = Number(flags['max-upload-mb'] ?? env.MAX_UPLOAD_MB ?? 50);
 
 const db = openDb(dbFile);
-const server = createServer({ db, token, webhook, publicFiles, host, maxUploadBytes: maxMb * 1024 * 1024 });
+const projectsDir = path.join(dataDir, 'projects');
+const server = createServer({ db, token, webhook, publicFiles, host, maxUploadBytes: maxMb * 1024 * 1024, projectsDir });
 server.listen(port, host, () => {
   console.log(`Image Administration running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`);
-  console.log(`Database: ${dbFile}`);
+  console.log(`Database: ${dbFile} (project "default"); other projects: ${projectsDir}`);
   console.log(generated ? `Admin token (generated, changes on every start; set ADMIN_TOKEN to keep one): ${token}` : 'Admin token: from ADMIN_TOKEN / --token');
   console.log(`Webhook: ${webhook ? webhook.url : 'none'} · files served ${publicFiles ? 'publicly' : 'with token only'}`);
 }).on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? `Port ${port} is in use, try --port <n>` : e.message); process.exit(1); });

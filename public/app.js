@@ -5,18 +5,30 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const API_HEADERS = { 'X-Sprite-Admin': '1' };
 
 let state = null, folder = '', filter = 'all', query = '', pickFor = null, lastJson = '';
+// every project is its own set of sprites; the choice is remembered in this browser
+let projectId = localStorage.getItem('project') || 'default', projects = [];
+const inProject = (u) => `${u}${u.includes('?') ? '&' : '?'}project=${encodeURIComponent(projectId)}`;
 const busy = new Set();
 
 /* ---------- data ---------- */
 async function refresh(force) {
   try {
-    const r = await fetch('/api/state', { cache: 'no-store' });
-    if (r.status === 401) { showLogin(); return; }
+    const pr = await fetch('/api/projects', { cache: 'no-store' });
+    if (pr.status === 401) { showLogin(); return; }
     hideLogin();
-    const text = await r.text();
+    projects = (await pr.json()).projects ?? [];
+    // nothing chosen yet and the default project is empty: open the first project that has sprites
+    if (!localStorage.getItem('project') && projectId === 'default' && !projects.find((p) => p.id === 'default')?.total) {
+      const first = projects.find((p) => p.total);
+      if (first) { projectId = first.id; force = true; }
+    }
+    if (!projects.some((p) => p.id === projectId)) { projectId = 'default'; folder = ''; force = true; } // the project was deleted
+    const r = await fetch(inProject('/api/state'), { cache: 'no-store' });
+    const stateText = await r.text();
+    const text = stateText + JSON.stringify(projects.map((p) => [p.id, p.name, p.percent]));
     if (!force && text === lastJson) return;
     lastJson = text;
-    state = JSON.parse(text);
+    state = JSON.parse(stateText);
     render();
   } catch { /* server stopped; keep last view */ }
 }
@@ -24,7 +36,7 @@ async function refresh(force) {
 async function upload(id, file) {
   busy.add(id); render();
   try {
-    const r = await fetch(`/api/upload?id=${encodeURIComponent(id)}`, { method: 'POST', headers: { ...API_HEADERS, 'Content-Type': 'application/octet-stream' }, body: file });
+    const r = await fetch(inProject(`/api/upload?id=${encodeURIComponent(id)}`), { method: 'POST', headers: { ...API_HEADERS, 'Content-Type': 'application/octet-stream' }, body: file });
     const j = await r.json();
     if (j.ok) toast(`Delivered <b>${esc(id)}</b> to ${j.sprite.targets.length} place${j.sprite.targets.length > 1 ? 's' : ''}`, j.warnings.length ? 'warn' : 'ok', j.warnings);
     else toast(`Rejected <b>${esc(file.name)}</b> for <b>${esc(id)}</b>`, 'bad', j.errors);
@@ -74,6 +86,9 @@ function render() {
   $('#projectName').textContent = state.project?.name ?? 'Image Administration';
   $('#projectDesc').textContent = state.project?.description ?? '';
   document.title = `${state.project?.name ?? 'Sprites'} · ${s.percent}%`;
+  const sel = $('#projectSelect');
+  sel.hidden = projects.length < 2;
+  sel.innerHTML = projects.map((p) => `<option value="${esc(p.id)}"${p.id === projectId ? ' selected' : ''}>${esc(p.name)} · ${p.percent}%</option>`).join('');
   const reqDone = s.requiredDone, reqTotal = s.requiredTotal;
   $('#overall').innerHTML = `
     <div class="nums"><b>${s.percent}% complete</b><span>${reqDone}/${reqTotal} required · ${s.done}/${s.total} total · ${s.missing} missing${s.invalid ? ` · <b style="color:var(--warn)">${s.invalid} need attention</b>` : ''}</span></div>
@@ -134,7 +149,7 @@ function deliveryLine(sp) {
 function card(sp) {
   const present = !!sp.image;
   const label = { available: 'Available', missing: 'Missing', invalid: 'Invalid' }[sp.status];
-  const thumb = present ? `<img loading="lazy" alt="" src="/api/file?id=${encodeURIComponent(sp.id)}&v=${sp.version}">`
+  const thumb = present ? `<img loading="lazy" alt="" src="${inProject(`/api/file?id=${encodeURIComponent(sp.id)}&v=${sp.version}`)}">`
     : `<div class="empty"><span style="font-size:26px">🖼️</span>${sp.spec.width && sp.spec.height ? `${sp.spec.width}×${sp.spec.height}` : 'no image yet'}</div>`;
   const targets = sp.targets.map((t) => `<li class="${!present ? 't-no' : sp.status === 'invalid' ? 't-bad' : 't-ok'}"><span class="m">${!present ? '○' : sp.status === 'invalid' ? '✕' : '✓'}</span><code>${esc(t.path)}</code>${t.label ? ` <em>${esc(t.label)}</em>` : ''}</li>`).join('');
   const isBusy = busy.has(sp.id);
@@ -166,6 +181,7 @@ document.addEventListener('click', (e) => {
   else if (t.dataset.upload) { pickFor = t.dataset.upload; $('#picker').value = ''; $('#picker').click(); }
   else if (t.dataset.logout !== undefined) logout();
 });
+$('#projectSelect').addEventListener('change', (e) => { projectId = e.target.value; localStorage.setItem('project', projectId); folder = ''; state = null; lastJson = ''; refresh(true); });
 $('#search').addEventListener('input', (e) => { query = e.target.value; render(); });
 $('#picker').addEventListener('change', (e) => { const f = e.target.files[0]; if (f && pickFor) startUpload(pickFor, f); });
 

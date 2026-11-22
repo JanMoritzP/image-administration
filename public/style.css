@@ -14,6 +14,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 .brand{display:flex;gap:12px;align-items:center;min-width:0}
 .logo{width:34px;height:34px;border-radius:8px;background:
   conic-gradient(var(--check1) 25%,var(--accent) 0 50%,var(--check1) 0 75%,var(--accent) 0) 0 0/17px 17px}
+#projectSelect{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font:inherit;max-width:260px}
 h1{font-size:18px;margin:0}.brand p{margin:0;color:var(--dim);max-width:60ch}
 .overall{flex:1;min-width:260px;max-width:560px}
 .overall .nums{display:flex;justify-content:space-between;gap:12px;margin-bottom:6px;font-weight:600}

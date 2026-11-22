@@ -4,7 +4,9 @@ Base URL e.g. `http://admin-host:4870`. Everything under `/api` needs `Authoriza
 
 | Method & path | Purpose |
 |---------------|---------|
-| `POST /api/requests` | Request images (add/replace sprites, folders, project info). |
+| `POST /api/requests` | Request images (add/replace sprites, folders, project info). With `project.id` it creates/uses that project. |
+| `GET /api/projects` | All projects with name and progress. |
+| `DELETE /api/projects?id=` | Delete a project with all its images (not `default`). |
 | `DELETE /api/sprites?id=` | Remove a sprite with its image and paths. |
 | `POST /api/upload?id=` | Body = raw image bytes. Validates and stores the image. (This is what the UI does.) |
 | `GET /api/state` | Everything: project, folders, sprites with status, image info, webhook delivery state. |
@@ -14,11 +16,22 @@ Base URL e.g. `http://admin-host:4870`. Everything under `/api` needs `Authoriza
 | `GET /files/<path>` | The image served under a target path. Token needed unless `PUBLIC_FILES=1`. Supports `ETag`/`If-None-Match`. |
 | `GET /healthz` | Liveness probe, no auth. |
 
+## Projects
+
+Every project is a separate set of sprites, target paths, image history and events, stored in its own SQLite file (`<DATA_DIR>/projects/<id>.db`). The database the server starts with is the project `default`, so existing setups keep working unchanged.
+
+* **Create:** send `"project": { "id": "harbour-shop", "name": "Harbour Shop" }` in `POST /api/requests`. The id is lower-case letters, digits and dashes (at most 63). A refused request leaves no project behind.
+* **Choose:** every other call takes `?project=<id>` (or an `X-Project` header). Without it the call is about `default`. An unknown project is `404`.
+* **Events** are counted per project: each project has its own `seq` starting at 1, and every event carries `project`. Keep one `since` per project.
+* **Files:** `GET /files/<path>` serves the `default` project, `GET /files/<project>/<path>` another one.
+* **Webhook:** the header `X-Sprite-Project` names the project (`default` for the default one); `X-Sprite-Seq` is that project's event number.
+* **UI:** a project switcher appears in the header once there is more than one project.
+
 ## `POST /api/requests`
 
 ```json
 {
-  "project": { "name": "Harbour Shop", "description": "Images for the web shop" },
+  "project": { "id": "harbour-shop", "name": "Harbour Shop", "description": "Images for the web shop" },
   "folders": { "shop": { "title": "Shop pages", "icon": "🛒", "description": "…" } },
   "sprites": [
     { "id": "shop/banner",
@@ -30,7 +43,7 @@ Base URL e.g. `http://admin-host:4870`. Everything under `/api` needs `Authoriza
 }
 ```
 
-All three top-level keys are optional, but at least one is needed. The request is **all or nothing**: any error means `422` and nothing changes.
+`project.id` is optional (without it the request is about the project of `?project=`, default `default`). All three top-level keys are optional, but at least one is needed. The request is **all or nothing**: any error means `422` and nothing changes.
 
 * A sprite with an existing `id` is **replaced** (its stored image stays; if the new spec no longer fits it, the sprite shows as *invalid*). Sprites may swap paths within one request.
 * `id`: `folder/sub/name` (letters, digits, `_ . -`). The folder tree in the UI is derived from it. `folders` only adds titles/icons/descriptions.

@@ -7,6 +7,8 @@ A small server that sits between an application (or a plugin that scrapes one) a
 3. **Everything is stored in one SQLite database**: project data, requests, paths and the image bytes.
 4. **Images go back to the plugin**: pushed by webhook the moment they are uploaded, or fetched on demand. Any image can also be served by path (`GET /files/site/banner.jpg`).
 
+Several applications, or several adventures of one, can each have their **own project**: a request that names `project.id` creates it, and the UI gets a project switcher.
+
 There are no contract files: the HTTP API is the only way to describe what is needed. No npm dependencies either, just Node's built-in modules (Node ≥ 22.13).
 
 ## Run it with Docker

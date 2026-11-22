@@ -21,7 +21,7 @@ export function tokenOk(header, token) {
  * POSTs each delivered image (raw bytes) to the plugin, retrying with exponential backoff.
  * Per sprite id the latest attempt is exposed via `status` so the UI/API can show it.
  */
-export function createDelivery({ url, token, retries = 5, baseDelayMs = 1000, timeoutMs = 15000 }) {
+export function createDelivery({ url, token, project = 'default', retries = 5, baseDelayMs = 1000, timeoutMs = 15000 }) {
   const status = new Map();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -31,6 +31,7 @@ export function createDelivery({ url, token, retries = 5, baseDelayMs = 1000, ti
     const headers = {
       'Content-Type': mime,
       'X-Sprite-Event': event.type,
+      'X-Sprite-Project': project,
       'X-Sprite-Id': event.id,
       'X-Sprite-Seq': String(event.seq),
       'X-Sprite-Sha256': event.sha256,

@@ -7,6 +7,7 @@ import { validateRequest } from './validate.js';
 import { applyRequest, deleteSprite, saveImage, getImage, listEvents, listHistory, DEFAULT_MAX_UPLOAD_BYTES } from './store.js';
 import { MIME } from './formats.js';
 import { tokenOk, safeEqual, sessionCookieValue, createDelivery } from './integration.js';
+import { createProjects, DEFAULT_PROJECT } from './projects.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const STATIC_MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
@@ -40,11 +41,19 @@ const parseCookies = (h) => Object.fromEntries((h ?? '').split(';').map((c) => c
  * @param {boolean} [o.publicFiles]  serve GET /files/<path> without authentication
  * @param {string} [o.host]
  * @param {number} [o.maxUploadBytes]
+ * @param {string|null} [o.projectsDir]  folder of the other projects' databases (null: kept in memory)
  */
-export function createServer({ db, token, webhook, publicFiles = false, host = '127.0.0.1', maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES }) {
+export function createServer({ db, token, webhook, publicFiles = false, host = '127.0.0.1', maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES, projectsDir = null }) {
   if (!token) throw new Error('an admin token is required');
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
-  const delivery = webhook?.url ? createDelivery(webhook) : null;
+  // every project is its own database; the one the server was started with is the project "default"
+  const projects = createProjects({ db, dir: projectsDir });
+  const deliveries = new Map();
+  const deliveryFor = (pid) => {
+    if (!webhook?.url) return null;
+    if (!deliveries.has(pid)) deliveries.set(pid, createDelivery({ ...webhook, project: pid }));
+    return deliveries.get(pid);
+  };
   const session = sessionCookieValue(token);
   const failures = new Map(); // ip -> {n, until} login throttle
 
@@ -65,7 +74,7 @@ export function createServer({ db, token, webhook, publicFiles = false, host = '
     return send(res, 200, img.data, headers);
   }
 
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://localhost');
       // DNS-rebinding guard when bound to loopback only.
@@ -79,7 +88,9 @@ export function createServer({ db, token, webhook, publicFiles = false, host = '
       if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/files/')) {
         if (!publicFiles && !authOf(req)) return send(res, 401, { error: 'authentication required' }, { 'WWW-Authenticate': 'Bearer' });
         let rel; try { rel = decodeURIComponent(url.pathname.slice('/files/'.length)); } catch { return send(res, 400, { error: 'bad path' }); }
-        const img = getImage(db, { path: rel });
+        const first = rel.split('/')[0];
+        const scoped = first !== DEFAULT_PROJECT ? projects.get(first) : null;
+        const img = scoped ? getImage(scoped, { path: rel.slice(first.length + 1) }) : getImage(db, { path: rel });
         return img ? sendImage(req, res, img) : send(res, 404, { error: 'no image at this path' });
       }
 
@@ -104,11 +115,18 @@ export function createServer({ db, token, webhook, publicFiles = false, host = '
         // Cookies are sent by browsers automatically, so state-changing calls that rely on one need a header a cross-site page cannot set.
         if (how === 'cookie' && req.method !== 'GET' && req.method !== 'HEAD' && req.headers['x-sprite-admin'] !== '1') return send(res, 403, { error: 'missing X-Sprite-Admin header' });
         const id = url.searchParams.get('id') ?? '';
+        const pid = url.searchParams.get('project') || req.headers['x-project'] || DEFAULT_PROJECT;
+        const pdb = projects.get(pid);
+        const noProject = () => send(res, 404, { ok: false, errors: [`unknown project "${pid}"`] });
 
-        if (route === 'GET /api/state') {
-          const state = buildState(db);
-          if (delivery) state.delivery = delivery.status();
-          return send(res, 200, state);
+        if (route === 'GET /api/projects') {
+          return send(res, 200, { projects: projects.ids().map((p) => { const s = buildState(projects.get(p), p); return { id: p, name: s.project.name, description: s.project.description, ...s.summary }; }) });
+        }
+        if (route === 'DELETE /api/projects') {
+          if (id === DEFAULT_PROJECT) return send(res, 400, { ok: false, errors: ['the default project cannot be deleted'] });
+          if (!projects.remove(id)) return send(res, 404, { ok: false, errors: [`unknown project "${id}"`] });
+          deliveries.delete(id);
+          return send(res, 200, { ok: true });
         }
 
         if (route === 'POST /api/requests') {
@@ -116,34 +134,51 @@ export function createServer({ db, token, webhook, publicFiles = false, host = '
           try { payload = JSON.parse((await readBody(req, JSON_LIMIT)).toString('utf8')); } catch (e) { if (e.status) throw e; return send(res, 400, { ok: false, errors: ['body is not valid JSON'], warnings: [] }); }
           const v = validateRequest(payload);
           if (v.errors.length) return send(res, 422, { ok: false, errors: v.errors, warnings: v.warnings });
-          const r = applyRequest(db, v);
-          return send(res, r.ok ? 200 : 422, { ...r, warnings: v.warnings });
+          // a request that names a project creates it; without a name it goes to the project of ?project= (default: the default one)
+          const { id: named, ...info } = v.project ?? {};
+          const target = named ?? pid;
+          let tdb = projects.get(target);
+          const created = !tdb && !!named;
+          if (!tdb) { if (!named) return noProject(); tdb = projects.ensure(target); }
+          const r = applyRequest(tdb, { ...v, project: Object.keys(info).length ? info : null });
+          if (!r.ok && created) projects.remove(target); // a refused request must not leave an empty project behind
+          return send(res, r.ok ? 200 : 422, { ...r, project: target, warnings: v.warnings });
+        }
+
+        if (!pdb) return noProject();
+
+        if (route === 'GET /api/state') {
+          const state = buildState(pdb, pid);
+          const delivery = deliveryFor(pid);
+          if (delivery) state.delivery = delivery.status();
+          return send(res, 200, state);
         }
 
         if (route === 'DELETE /api/sprites') {
-          const r = deleteSprite(db, id);
+          const r = deleteSprite(pdb, id);
           return send(res, r.status, r);
         }
 
         if (route === 'POST /api/upload') {
           const buf = await readBody(req, maxUploadBytes);
-          const r = saveImage(db, id, buf, maxUploadBytes);
+          const r = saveImage(pdb, id, buf, maxUploadBytes);
+          const delivery = deliveryFor(pid);
           if (r.ok && delivery) delivery.deliver(r.event, buf, MIME[r.event.format]);
           const { event, ...rest } = r;
           return send(res, r.status, rest);
         }
 
         if (route === 'GET /api/file') {
-          const img = getImage(db, { id, history: Number(url.searchParams.get('history')) || undefined });
+          const img = getImage(pdb, { id, history: Number(url.searchParams.get('history')) || undefined });
           return img ? sendImage(req, res, img) : send(res, 404, { error: 'no image' });
         }
 
-        if (route === 'GET /api/history') return send(res, 200, { versions: listHistory(db, id) });
+        if (route === 'GET /api/history') return send(res, 200, { versions: listHistory(pdb, id) });
 
         if (route === 'GET /api/events') {
           const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
           const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get('limit')) || 100));
-          return send(res, 200, { events: listEvents(db, since, limit) });
+          return send(res, 200, { events: listEvents(pdb, since, limit).map((e) => ({ ...e, project: pid })) });
         }
         return send(res, 404, { error: 'not found' });
       }
@@ -158,4 +193,6 @@ export function createServer({ db, token, webhook, publicFiles = false, host = '
       return send(res, e.status ?? 500, { ok: false, errors: [e.status ? e.message : 'server error'] });
     }
   });
+  server.on('close', () => projects.close());
+  return server;
 }

@@ -50,7 +50,7 @@ export function loadSprites(db, onlyId) {
   return rows.map((r) => evaluate(r, targets.get(r.id) ?? [], images.get(r.id)));
 }
 
-export function buildState(db) {
+export function buildState(db, projectId = 'default') {
   const meta = Object.fromEntries(db.prepare('SELECT key, value FROM meta').all().map((r) => [r.key, r.value]));
   const sprites = loadSprites(db);
   const declared = new Map(db.prepare('SELECT * FROM folders ORDER BY rowid').all().map((f) => [f.id, f]));
@@ -78,7 +78,7 @@ export function buildState(db) {
     segs.forEach((_, i) => add(stats.get(segs.slice(0, i + 1).join('/')), sp));
   }
   return {
-    project: { name: meta.name ?? 'Image Administration', description: meta.description ?? '' },
+    project: { id: projectId, name: meta.name ?? (projectId === 'default' ? 'Image Administration' : projectId), description: meta.description ?? '' },
     generatedAt: new Date().toISOString(),
     summary: finish(summary),
     folders: ordered.map((f) => ({ ...f, ...finish(stats.get(f.id)) })),

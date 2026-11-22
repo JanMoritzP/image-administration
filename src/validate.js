@@ -1,6 +1,7 @@
 // Validates what a plugin sends to POST /api/requests and normalizes it. Never throws; returns errors/warnings as text.
 import path from 'node:path';
 import { FORMATS, EXT_FORMAT } from './formats.js';
+import { PROJECT_ID_RE } from './projects.js';
 
 export const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*(\/[A-Za-z0-9][A-Za-z0-9_.-]*)*$/;
 const SPRITE_KEYS = ['id', 'title', 'description', 'required', 'tags', 'notes', 'spec', 'target', 'targets'];
@@ -72,10 +73,11 @@ export function validateRequest(payload) {
     const p = payload.project;
     if (!isObj(p)) d.err('/project', '"project" must be an object');
     else {
-      d.unknownKeys(p, ['name', 'description'], '/project');
+      d.unknownKeys(p, ['id', 'name', 'description'], '/project');
+      if (p.id !== undefined && (!isStr(p.id) || !PROJECT_ID_RE.test(p.id))) d.err('/project/id', '"id" must be lower-case letters, digits and dashes (at most 63), e.g. "harbour-shop"');
       if (p.name !== undefined && (!isStr(p.name) || !p.name.trim())) d.err('/project/name', '"name" must be a non-empty string');
       if (p.description !== undefined && !isStr(p.description)) d.err('/project/description', '"description" must be a string');
-      res.project = { ...(isStr(p.name) ? { name: p.name.trim() } : {}), ...(isStr(p.description) ? { description: p.description } : {}) };
+      res.project = { ...(isStr(p.id) && PROJECT_ID_RE.test(p.id) ? { id: p.id } : {}), ...(isStr(p.name) ? { name: p.name.trim() } : {}), ...(isStr(p.description) ? { description: p.description } : {}) };
     }
   }
 
