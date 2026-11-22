@@ -1,60 +1,9 @@
-// Evaluates a loaded contract against the file system: which sprites exist, which are valid.
-import fs from 'node:fs';
-import { probeImage, checkSpec, formatOfPath } from './images.js';
-
-const probeCache = new Map(); // abs -> {mtimeMs,size,info}
-
-export function inspectFile(abs) {
-  let st;
-  try { st = fs.statSync(abs); } catch { return null; }
-  if (!st.isFile()) return null;
-  const hit = probeCache.get(abs);
-  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return { ...hit.data };
-  const buf = fs.readFileSync(abs);
-  const info = probeImage(buf);
-  const data = { mtimeMs: st.mtimeMs, bytes: st.size, info };
-  probeCache.set(abs, { mtimeMs: st.mtimeMs, size: st.size, data });
-  return { ...data };
-}
-
-export function evaluateTarget(target, spec) {
-  const f = inspectFile(target.abs);
-  const base = { path: target.path, ...(target.label ? { label: target.label } : {}) };
-  if (!f) return { ...base, exists: false, issues: [] };
-  const issues = [];
-  let out = { ...base, exists: true, bytes: f.bytes, mtime: Math.round(f.mtimeMs) };
-  if (!f.info) {
-    issues.push({ level: 'error', code: 'not-an-image', message: 'file exists but is not a recognizable PNG/JPEG/GIF/WebP/SVG image' });
-  } else {
-    out = { ...out, format: f.info.format, width: f.info.width, height: f.info.height, alpha: f.info.alpha };
-    const want = formatOfPath(target.path);
-    if (want && want !== f.info.format) issues.push({ level: 'error', code: 'format-ext-mismatch', message: `file content is ${f.info.format.toUpperCase()} but the path ends in .${target.path.split('.').pop()}` });
-    issues.push(...checkSpec(f.info, spec));
-  }
-  return { ...out, issues };
-}
-
-export function evaluateSprite(sprite) {
-  const targets = sprite.targets.map((t) => evaluateTarget(t, sprite.spec));
-  const present = targets.filter((t) => t.exists);
-  const hasError = present.some((t) => t.issues.some((i) => i.level === 'error'));
-  let status;
-  if (!present.length) status = 'missing';
-  else if (hasError) status = 'invalid';
-  else if (present.length < targets.length) status = 'partial';
-  else status = 'available';
-  const issues = targets.flatMap((t) => t.issues.map((i) => ({ ...i, target: t.path })));
-  if (status === 'partial') for (const t of targets.filter((x) => !x.exists)) issues.push({ level: 'error', code: 'target-missing', target: t.path, message: 'this target has no file yet (use "Sync targets" or upload again)' });
-  return {
-    id: sprite.id, folder: sprite.folder, name: sprite.name, title: sprite.title, description: sprite.description,
-    required: sprite.required, tags: sprite.tags, notes: sprite.notes, reference: sprite.reference, spec: sprite.spec,
-    source: sprite.source, status, targets, issues,
-    version: Math.max(0, ...present.map((t) => t.mtime)),
-  };
-}
+// Builds the status report from the database: which sprites have a valid image, which are missing or invalid.
+import { checkSpec, formatOfPath } from './images.js';
 
 const pct = (done, total) => (total ? Math.round((100 * done) / total) : 0);
-const tally = () => ({ total: 0, done: 0, missing: 0, partial: 0, invalid: 0, requiredTotal: 0, requiredDone: 0, percent: 0 });
+const tally = () => ({ total: 0, done: 0, missing: 0, invalid: 0, requiredTotal: 0, requiredDone: 0, percent: 0 });
+const humanize = (s) => s.replace(/[-_.]+/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
 function add(t, sp) {
   t.total++;
@@ -67,25 +16,72 @@ function finish(t) {
   return t;
 }
 
-export function evaluateContract(contract) {
-  const sprites = contract.sprites.map(evaluateSprite);
+function evaluate(row, targets, img) {
+  const spec = JSON.parse(row.spec);
+  const segs = row.id.split('/');
+  let status = 'missing'; let issues = [];
+  if (img) {
+    issues = checkSpec({ format: img.format, width: img.width, height: img.height, alpha: img.alpha == null ? null : !!img.alpha, bytes: img.bytes }, spec);
+    for (const t of targets) {
+      const want = formatOfPath(t.path);
+      if (want && want !== img.format) issues.push({ level: 'error', code: 'format-ext-mismatch', message: `the stored image is ${img.format.toUpperCase()} but ${t.path} needs ${want.toUpperCase()}; upload again` });
+    }
+    status = issues.some((i) => i.level === 'error') ? 'invalid' : 'available';
+  }
+  return {
+    id: row.id, folder: segs.slice(0, -1).join('/'), name: segs.at(-1), title: row.title, description: row.description,
+    required: !!row.required, tags: JSON.parse(row.tags), notes: row.notes, spec, status, issues,
+    targets: targets.map((t) => ({ path: t.path, ...(t.label ? { label: t.label } : {}), url: `/files/${t.path}` })),
+    image: img ? { format: img.format, width: img.width, height: img.height, alpha: img.alpha == null ? null : !!img.alpha, bytes: img.bytes, sha256: img.sha256, updatedAt: img.updated_at } : null,
+    version: img ? Date.parse(img.updated_at) : 0,
+  };
+}
+
+const IMG_COLS = 'sprite_id, format, width, height, alpha, bytes, sha256, updated_at'; // everything except the blob
+
+/** All sprites (or just `onlyId`) with their evaluated status. */
+export function loadSprites(db, onlyId) {
+  const where = onlyId ? 'WHERE id = ?' : '';
+  const args = onlyId ? [onlyId] : [];
+  const rows = db.prepare(`SELECT * FROM sprites ${where} ORDER BY rowid`).all(...args);
+  const targets = new Map(); const images = new Map();
+  for (const t of db.prepare(`SELECT * FROM targets ${onlyId ? 'WHERE sprite_id = ?' : ''} ORDER BY position`).all(...args)) (targets.get(t.sprite_id) ?? targets.set(t.sprite_id, []).get(t.sprite_id)).push(t);
+  for (const i of db.prepare(`SELECT ${IMG_COLS} FROM images ${onlyId ? 'WHERE sprite_id = ?' : ''}`).all(...args)) images.set(i.sprite_id, i);
+  return rows.map((r) => evaluate(r, targets.get(r.id) ?? [], images.get(r.id)));
+}
+
+export function buildState(db) {
+  const meta = Object.fromEntries(db.prepare('SELECT key, value FROM meta').all().map((r) => [r.key, r.value]));
+  const sprites = loadSprites(db);
+  const declared = new Map(db.prepare('SELECT * FROM folders ORDER BY rowid').all().map((f) => [f.id, f]));
+
+  // Folder tree: declared folders and every ancestor of a sprite's folder, children right after their parent.
+  const seen = new Map();
+  const touch = (id) => {
+    if (id.includes('/')) touch(id.slice(0, id.lastIndexOf('/')));
+    if (seen.has(id)) return;
+    const f = declared.get(id);
+    seen.set(id, { id, title: f?.title ?? humanize(id.split('/').pop()), description: f?.description ?? '', icon: f?.icon ?? '', depth: id.split('/').length });
+  };
+  for (const id of declared.keys()) touch(id);
+  for (const sp of sprites) if (sp.folder) touch(sp.folder);
+  const all = [...seen.values()]; const ordered = [];
+  const parentOf = (id) => (id.includes('/') ? id.slice(0, id.lastIndexOf('/')) : '');
+  const walk = (parent) => all.filter((f) => parentOf(f.id) === parent).forEach((f) => { ordered.push(f); walk(f.id); });
+  walk('');
+
   const summary = tally();
-  const folderStats = new Map(contract.folders.map((f) => [f.id, tally()]));
+  const stats = new Map(ordered.map((f) => [f.id, tally()]));
   for (const sp of sprites) {
     add(summary, sp);
     const segs = sp.folder ? sp.folder.split('/') : [];
-    segs.forEach((_, i) => add(folderStats.get(segs.slice(0, i + 1).join('/')), sp));
+    segs.forEach((_, i) => add(stats.get(segs.slice(0, i + 1).join('/')), sp));
   }
   return {
-    report: '1.0',
-    contract: { version: '1.0', manifest: contract.manifest, root: contract.root, files: contract.files },
-    project: contract.project,
+    project: { name: meta.name ?? 'Image Administration', description: meta.description ?? '' },
     generatedAt: new Date().toISOString(),
     summary: finish(summary),
-    folders: contract.folders.map((f) => ({ ...f, ...finish(folderStats.get(f.id)) })),
+    folders: ordered.map((f) => ({ ...f, ...finish(stats.get(f.id)) })),
     sprites,
-    diagnostics: contract.diagnostics,
-    ok: contract.ok,
-    fatal: contract.fatal,
   };
 }

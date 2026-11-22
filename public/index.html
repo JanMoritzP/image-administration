@@ -13,8 +13,8 @@
     <div><h1 id="projectName">Loading…</h1><p id="projectDesc"></p></div>
   </div>
   <div class="overall" id="overall"></div>
+  <button class="btn" data-logout aria-label="Log out">Log out</button>
 </header>
-<div id="banner"></div>
 <div class="layout">
   <nav class="side" id="tree" aria-label="Folders"></nav>
   <main class="main">
@@ -24,11 +24,16 @@
       <input id="search" type="search" placeholder="Search id, description, tag…" aria-label="Search sprites">
     </div>
     <div class="grid" id="grid"></div>
-    <p class="hint">Tip: drop one or many image files anywhere on the page. Files are matched to sprites by file name (e.g. <code>stone.png</code> → <code>tiles/floor/stone</code>); drop onto a specific card to choose explicitly.</p>
+    <p class="hint">Tip: drop one or many image files anywhere on the page. If an image is not exactly the required size, a fit editor lets you scale and position it. Files are matched to sprites by file name (e.g. <code>stone.png</code> → <code>tiles/floor/stone</code>); drop onto a specific card to choose explicitly.</p>
   </main>
 </div>
 <input type="file" id="picker" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml" hidden>
 <div class="dropveil" id="veil"><div>Drop images to deliver them</div></div>
+<div class="login" id="login" role="dialog" aria-modal="true" aria-label="Log in">
+  <form id="loginForm"><h2>Image Administration</h2><p>Enter the admin token.</p>
+    <input id="loginToken" type="password" autocomplete="current-password" placeholder="Admin token" required>
+    <button class="btn primary" type="submit">Log in</button><p class="err" id="loginError" role="alert"></p></form>
+</div>
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <script src="/app.js" type="module"></script>
 </body>

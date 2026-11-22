@@ -1,17 +1,13 @@
 {
   "name": "image-administration",
-  "version": "1.0.0",
-  "description": "Sprite Contract: a file-based standard for declaring the sprites an app needs, plus an admin UI/CLI that shows what is missing and delivers uploaded images to the right places.",
+  "version": "2.0.0",
+  "description": "Image administration server: plugins request images over HTTP, people upload them (scaled to fit in the UI), images are stored in SQLite and pushed back to the plugin.",
   "type": "module",
   "bin": { "sprite-admin": "bin/sprite-admin.js" },
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=22.13" },
   "scripts": {
-    "start": "node bin/sprite-admin.js serve",
-    "demo": "node bin/sprite-admin.js serve examples/dungeon-dash",
-    "demo:reset": "node scripts/make-demo-art.js",
-    "test": "node --test \"test/*.test.js\""
+    "start": "node --disable-warning=ExperimentalWarning bin/sprite-admin.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\""
   },
-  "license": "MIT",
-  "dependencies": { "yaml": "^2.5.0" },
-  "devDependencies": { "ajv": "^8.17.0" }
+  "license": "MIT"
 }

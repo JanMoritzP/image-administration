@@ -11,6 +11,8 @@ const busy = new Set();
 async function refresh(force) {
   try {
     const r = await fetch('/api/state', { cache: 'no-store' });
+    if (r.status === 401) { showLogin(); return; }
+    hideLogin();
     const text = await r.text();
     if (!force && text === lastJson) return;
     lastJson = text;
@@ -52,14 +54,6 @@ async function startUpload(id, file) {
   return upload(id, file);
 }
 
-async function sync(id) {
-  busy.add(id); render();
-  try {
-    const j = await (await fetch(`/api/sync?id=${encodeURIComponent(id)}`, { method: 'POST', headers: API_HEADERS })).json();
-    toast(j.ok ? `Synced targets of <b>${esc(id)}</b>` : `Could not sync <b>${esc(id)}</b>`, j.ok ? 'ok' : 'bad', j.errors);
-  } finally { busy.delete(id); await refresh(true); }
-}
-
 function toast(html, kind = 'ok', list = []) {
   const el = document.createElement('div');
   el.className = `toast ${kind === 'ok' ? '' : kind}`;
@@ -82,24 +76,19 @@ function render() {
   document.title = `${state.project?.name ?? 'Sprites'} · ${s.percent}%`;
   const reqDone = s.requiredDone, reqTotal = s.requiredTotal;
   $('#overall').innerHTML = `
-    <div class="nums"><b>${s.percent}% complete</b><span>${reqDone}/${reqTotal} required · ${s.done}/${s.total} total · ${s.missing} missing${s.partial + s.invalid ? ` · <b style="color:var(--warn)">${s.partial + s.invalid} need attention</b>` : ''}</span></div>
-    ${barHtml(s.done, s.partial + s.invalid, s.total)}`;
-
-  const diags = state.diagnostics ?? [];
-  $('#banner').innerHTML = diags.length ? `<div class="banner ${diags.some((d) => d.level === 'error') ? 'err' : ''}">
-    <h4>${state.fatal ? 'Contract could not be loaded' : 'Contract diagnostics'} (${diags.length})</h4>
-    <ul>${diags.map((d) => `<li class="lv-${d.level}"><code>${esc(d.file.split('/').slice(-2).join('/'))}${esc(d.pointer)}</code> ${esc(d.message)}</li>`).join('')}</ul></div>` : '';
+    <div class="nums"><b>${s.percent}% complete</b><span>${reqDone}/${reqTotal} required · ${s.done}/${s.total} total · ${s.missing} missing${s.invalid ? ` · <b style="color:var(--warn)">${s.invalid} need attention</b>` : ''}</span></div>
+    ${barHtml(s.done, s.invalid, s.total)}`;
 
   // folder tree
   const total = state.summary;
   $('#tree').innerHTML = [{ id: '', title: 'All sprites', icon: '🗂️', depth: 0, ...total }, ...state.folders].map((f) => `
     <button class="f ${f.id === folder ? 'sel' : ''} ${f.done === f.total && f.total ? 'done' : ''}" data-folder="${esc(f.id)}" style="padding-left:${10 + Math.max(0, f.depth - 1) * 16}px">
       <span class="row"><span>${esc(f.icon ? f.icon + ' ' : '')}${esc(f.title)}</span><span class="cnt">${f.done}/${f.total}</span></span>
-      ${barHtml(f.done, f.partial + f.invalid, f.total, true)}
+      ${barHtml(f.done, f.invalid, f.total, true)}
     </button>`).join('');
 
   const cur = state.folders.find((f) => f.id === folder);
-  $('#crumb').innerHTML = `<h2>${esc(cur ? cur.title : 'All sprites')}</h2><p>${esc(cur?.description ?? 'Every sprite the contract asks for. Pick a folder on the left to narrow down.')}</p>`;
+  $('#crumb').innerHTML = `<h2>${esc(cur ? cur.title : 'All sprites')}</h2><p>${esc(cur?.description ?? 'Every image that has been requested. Pick a folder on the left to narrow down.')}</p>`;
 
   const counts = { all: 0, missing: 0, attention: 0, available: 0 };
   const inFolder = state.sprites.filter((sp) => !folder || sp.folder === folder || sp.folder.startsWith(folder + '/'));
@@ -111,7 +100,7 @@ function render() {
   const list = inFolder.filter((sp) => {
     if (filter === 'missing' && sp.status !== 'missing') return false;
     if (filter === 'available' && sp.status !== 'available') return false;
-    if (filter === 'attention' && !['partial', 'invalid'].includes(sp.status)) return false;
+    if (filter === 'attention' && sp.status !== 'invalid') return false;
     return !q || [sp.id, sp.title, sp.description, ...sp.tags].join(' ').toLowerCase().includes(q);
   });
   $('#grid').innerHTML = list.length ? list.map(card).join('') : '<div class="empty-state">Nothing here. 🎉 or adjust the filter.</div>';
@@ -143,16 +132,11 @@ function deliveryLine(sp) {
 }
 
 function card(sp) {
-  const present = sp.targets.find((t) => t.exists);
-  const label = { available: 'Available', missing: 'Missing', partial: 'Partial', invalid: 'Invalid' }[sp.status];
-  const thumb = present ? `<img loading="lazy" alt="" src="/api/image?id=${encodeURIComponent(sp.id)}&v=${sp.version}">`
+  const present = !!sp.image;
+  const label = { available: 'Available', missing: 'Missing', invalid: 'Invalid' }[sp.status];
+  const thumb = present ? `<img loading="lazy" alt="" src="/api/file?id=${encodeURIComponent(sp.id)}&v=${sp.version}">`
     : `<div class="empty"><span style="font-size:26px">🖼️</span>${sp.spec.width && sp.spec.height ? `${sp.spec.width}×${sp.spec.height}` : 'no image yet'}</div>`;
-  const targets = sp.targets.map((t) => {
-    const bad = t.issues.some((i) => i.level === 'error');
-    const cls = !t.exists ? 't-no' : bad ? 't-bad' : 't-ok';
-    return `<li class="${cls}"><span class="m">${!t.exists ? '○' : bad ? '✕' : '✓'}</span><code>${esc(t.path)}</code>${t.label ? ` <em>${esc(t.label)}</em>` : ''}${t.exists && t.width ? ` <em>${t.width}×${t.height}</em>` : ''}</li>`;
-  }).join('');
-  const issues = sp.issues.filter((i) => i.code !== 'target-missing' || sp.status === 'partial');
+  const targets = sp.targets.map((t) => `<li class="${!present ? 't-no' : sp.status === 'invalid' ? 't-bad' : 't-ok'}"><span class="m">${!present ? '○' : sp.status === 'invalid' ? '✕' : '✓'}</span><code>${esc(t.path)}</code>${t.label ? ` <em>${esc(t.label)}</em>` : ''}</li>`).join('');
   const isBusy = busy.has(sp.id);
   return `<article class="card s-${sp.status}" data-id="${esc(sp.id)}">
     <div class="thumb">${thumb}<span class="badge">${label}</span></div>
@@ -162,25 +146,25 @@ function card(sp) {
       <p class="desc">${esc(sp.description)}</p>
       <div class="specs">${specChips(sp)}</div>
       <ul class="targets">${targets}</ul>
-      ${issues.length ? `<ul class="issues">${issues.map((i) => `<li class="${i.level === 'warn' ? 'w' : ''}">${esc(i.message)}${sp.targets.length > 1 ? ` <code>${esc(i.target)}</code>` : ''}</li>`).join('')}</ul>` : ''}
+      ${present ? `<p class="notes">Stored: ${sp.image.width ? `${sp.image.width}×${sp.image.height}px · ` : ''}${sp.image.format.toUpperCase()} · ${(sp.image.bytes / 1024).toFixed(sp.image.bytes < 10240 ? 1 : 0)} KB</p>` : ''}
+      ${sp.issues.length ? `<ul class="issues">${sp.issues.map((i) => `<li class="${i.level === 'warn' ? 'w' : ''}">${esc(i.message)}</li>`).join('')}</ul>` : ''}
       ${deliveryLine(sp)}
       ${sp.notes ? `<p class="notes">${esc(sp.notes)}</p>` : ''}
       ${sp.tags.length ? `<div class="tags">${sp.tags.map((t) => `<span>${esc(t)}</span>`).join('')}</div>` : ''}
       <div class="actions">
         <button class="btn primary" data-upload="${esc(sp.id)}" ${isBusy ? 'disabled' : ''}>${isBusy ? 'Working…' : present ? 'Replace image' : 'Upload image'}</button>
-        ${sp.status === 'partial' ? `<button class="btn" data-sync="${esc(sp.id)}" ${isBusy ? 'disabled' : ''}>Sync targets</button>` : ''}
       </div>
     </div></article>`;
 }
 
 /* ---------- events ---------- */
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-folder],[data-filter],[data-upload],[data-sync]');
+  const t = e.target.closest('[data-folder],[data-filter],[data-upload],[data-logout]');
   if (!t) return;
   if (t.dataset.folder !== undefined) { folder = t.dataset.folder; render(); }
   else if (t.dataset.filter) { filter = t.dataset.filter; render(); }
   else if (t.dataset.upload) { pickFor = t.dataset.upload; $('#picker').value = ''; $('#picker').click(); }
-  else if (t.dataset.sync) sync(t.dataset.sync);
+  else if (t.dataset.logout !== undefined) logout();
 });
 $('#search').addEventListener('input', (e) => { query = e.target.value; render(); });
 $('#picker').addEventListener('change', (e) => { const f = e.target.files[0]; if (f && pickFor) startUpload(pickFor, f); });
@@ -211,6 +195,17 @@ async function bulk(files) {
   }
   if (files.length > 1 || problems.length) toast(`${ok}/${files.length} files delivered`, problems.length ? 'warn' : 'ok', problems);
 }
+
+/* ---------- login ---------- */
+function showLogin() { $('#login').classList.add('on'); $('#loginToken').focus(); }
+function hideLogin() { $('#login').classList.remove('on'); }
+$('#loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const r = await fetch('/api/login', { method: 'POST', headers: API_HEADERS, body: JSON.stringify({ token: $('#loginToken').value }) });
+  $('#loginError').textContent = r.ok ? '' : r.status === 429 ? 'Too many attempts, wait a minute.' : 'Wrong token.';
+  if (r.ok) { $('#loginToken').value = ''; await refresh(true); }
+});
+async function logout() { await fetch('/api/logout', { method: 'POST', headers: API_HEADERS }); state = null; lastJson = ''; showLogin(); }
 
 refresh(true);
 setInterval(() => { if (!document.hidden) refresh(); }, 4000);

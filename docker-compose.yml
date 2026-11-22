@@ -1,0 +1,17 @@
+services:
+  image-admin:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "4870:4870"            # put a TLS reverse proxy in front for anything beyond a trusted network
+    environment:
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env or the shell}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}          # where uploaded images are pushed (the plugin), optional
+      WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:-}
+      PUBLIC_FILES: ${PUBLIC_FILES:-0}       # 1 = GET /files/<path> needs no token
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-50}
+    volumes:
+      - image-admin-data:/data               # the SQLite database lives here: back this up
+
+volumes:
+  image-admin-data:

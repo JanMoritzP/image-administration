@@ -1,105 +1,51 @@
 #!/usr/bin/env node
-import fs from 'node:fs';
+// Image Administration server. Configuration comes from environment variables (Docker) or flags (local use).
+import crypto from 'node:crypto';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { loadContract, findManifest, MANIFEST_NAMES } from '../src/contract.js';
-import { evaluateContract } from '../src/status.js';
+import { openDb } from '../src/db.js';
 import { createServer } from '../src/server.js';
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const HELP = `sprite-admin - manage the sprites an app needs, driven by a Sprite Contract
+const HELP = `image-administration: image requests, uploads and delivery over HTTP, stored in SQLite
 
-Usage:
-  sprite-admin [serve] [contract] [--port 4870] [--host 127.0.0.1]   open the admin UI
-        --token <t>          enable the plugin API (bearer token; or env SPRITE_ADMIN_TOKEN)
-        --webhook <url>      push every uploaded image to this URL (or env SPRITE_ADMIN_WEBHOOK)
-        --webhook-token <t>  bearer token sent to the webhook (or env SPRITE_ADMIN_WEBHOOK_TOKEN)
-  sprite-admin validate [contract]                                   check the contract files (exit 1 on errors)
-  sprite-admin status [contract] [--json] [--missing] [--check]      progress report
-        --json     machine-readable report (see docs/CONTRACT.md "Status report")
-        --missing  only list sprites that are not done, with their descriptions
-        --check    exit 2 when required sprites are still missing (for CI)
-  sprite-admin init [dir]                                            scaffold a starter contract
-  sprite-admin schema                                                print the path of the JSON Schema
+Usage: sprite-admin [--port 4870] [--host 127.0.0.1] [--data ./data] [--token <t>]
+                    [--webhook <url>] [--webhook-token <t>] [--public-files] [--max-upload-mb 50]
 
-[contract] is a contract file or a directory containing ${MANIFEST_NAMES[0]} (default: current directory).`;
+Every option has an environment variable:
+  PORT, HOST, DATA_DIR (holds image-admin.db), ADMIN_TOKEN, WEBHOOK_URL, WEBHOOK_TOKEN, PUBLIC_FILES=1, MAX_UPLOAD_MB
 
-const args = process.argv.slice(2);
+ADMIN_TOKEN is the password of the web UI and the bearer token of the API. If unset, a random one is generated and printed.`;
+
+const VALUE_FLAGS = ['port', 'host', 'data', 'token', 'webhook', 'webhook-token', 'max-upload-mb'];
 const flags = {};
-const pos = [];
+const args = process.argv.slice(2);
 for (let i = 0; i < args.length; i++) {
-  if (args[i].startsWith('--')) { const k = args[i].slice(2); const next = args[i + 1]; if (['port', 'host', 'token', 'webhook', 'webhook-token'].includes(k)) { flags[k] = next; i++; } else flags[k] = true; }
-  else pos.push(args[i]);
+  if (!args[i].startsWith('--')) { console.error(`unexpected argument "${args[i]}"\n\n${HELP}`); process.exit(1); }
+  const k = args[i].slice(2);
+  if (VALUE_FLAGS.includes(k)) { flags[k] = args[++i]; if (flags[k] === undefined) { console.error(`--${k} needs a value`); process.exit(1); } }
+  else flags[k] = true;
 }
-const commands = ['serve', 'validate', 'status', 'init', 'schema', 'help'];
-const cmd = commands.includes(pos[0]) ? pos.shift() : 'serve';
-const target = pos[0] ?? '.';
+if (flags.help || flags.h) { console.log(HELP); process.exit(0); }
 
-const color = process.stdout.isTTY ? (c, s) => `\x1b[${c}m${s}\x1b[0m` : (_, s) => s;
-function printDiagnostics(list, base) {
-  for (const x of list) {
-    const tag = x.level === 'error' ? color(31, 'error  ') : color(33, 'warning');
-    console.log(`${tag} ${path.relative(base, x.file) || x.file}${x.pointer ? ` ${x.pointer}` : ''}  [${x.code}] ${x.message}`);
-  }
-}
-function bar(pct, w = 24) { const f = Math.round((pct / 100) * w); return `[${'#'.repeat(f)}${'.'.repeat(w - f)}]`; }
+const env = process.env;
+const port = Number(flags.port ?? env.PORT ?? 4870);
+const host = flags.host ?? env.HOST ?? '127.0.0.1';
+const dataDir = path.resolve(flags.data ?? env.DATA_DIR ?? 'data');
+const dbFile = path.join(dataDir, 'image-admin.db');
+let token = flags.token ?? env.ADMIN_TOKEN;
+const generated = !token;
+if (generated) token = crypto.randomBytes(24).toString('base64url');
+const webhookUrl = flags.webhook ?? env.WEBHOOK_URL;
+const webhook = webhookUrl ? { url: webhookUrl, token: flags['webhook-token'] ?? env.WEBHOOK_TOKEN } : undefined;
+const publicFiles = !!flags['public-files'] || ['1', 'true'].includes(env.PUBLIC_FILES ?? '');
+const maxMb = Number(flags['max-upload-mb'] ?? env.MAX_UPLOAD_MB ?? 50);
 
-if (cmd === 'help' || flags.help || flags.h) { console.log(HELP); process.exit(0); }
-
-if (cmd === 'schema') { console.log(path.join(ROOT, 'schema', 'sprite-contract.schema.json')); process.exit(0); }
-
-if (cmd === 'init') {
-  const dir = path.resolve(pos[0] ?? '.');
-  const file = path.join(dir, MANIFEST_NAMES[0]);
-  if (fs.existsSync(file)) { console.error(`${file} already exists`); process.exit(1); }
-  fs.mkdirSync(dir, { recursive: true });
-  fs.copyFileSync(path.join(ROOT, 'examples', 'starter.sprites.yml'), file);
-  console.log(`Created ${file}\nEdit it (see docs/CONTRACT.md), then run: sprite-admin serve ${pos[0] ?? '.'}`);
-  process.exit(0);
-}
-
-const manifest = findManifest(target);
-if (!manifest) { console.error(`No ${MANIFEST_NAMES.join(' / ')} found in "${target}". Run "sprite-admin init" to create one.`); process.exit(1); }
-const base = path.dirname(manifest);
-
-if (cmd === 'validate') {
-  const c = loadContract(manifest);
-  printDiagnostics(c.diagnostics, base);
-  const errors = c.diagnostics.filter((d) => d.level === 'error').length;
-  const warns = c.diagnostics.length - errors;
-  console.log(`${c.sprites.length} sprites in ${c.files.length} file(s), ${errors} error(s), ${warns} warning(s)`);
-  process.exit(errors ? 1 : 0);
-}
-
-if (cmd === 'status') {
-  const rep = evaluateContract(loadContract(manifest));
-  const s = rep.summary;
-  if (flags.json) { console.log(JSON.stringify(rep, null, 2)); }
-  else {
-    console.log(`${rep.project?.name ?? 'project'}  ${bar(s.percent)} ${s.percent}%  (${s.done}/${s.total} done, ${s.missing} missing, ${s.partial} partial, ${s.invalid} invalid)`);
-    if (rep.diagnostics.length) { console.log(''); printDiagnostics(rep.diagnostics, base); console.log(''); }
-    for (const f of rep.folders.filter((f) => f.depth === 1)) console.log(`  ${f.title.padEnd(24)} ${bar(f.percent, 16)} ${f.done}/${f.total}`);
-    if (flags.missing) {
-      console.log('');
-      for (const sp of rep.sprites.filter((x) => x.status !== 'available')) {
-        const sz = [sp.spec.width && sp.spec.height ? `${sp.spec.width}x${sp.spec.height}` : null, sp.spec.formats.join('/')].filter(Boolean).join(' ');
-        console.log(`- ${sp.id} [${sp.status}${sp.required ? '' : ', optional'}] ${sz}\n    ${sp.description}\n    -> ${sp.targets.map((t) => t.path).join(', ')}`);
-      }
-    }
-  }
-  const missingRequired = rep.sprites.some((x) => x.required && x.status !== 'available');
-  process.exit(flags.check && (missingRequired || !rep.ok) ? 2 : 0);
-}
-
-// serve
-const port = Number(flags.port ?? process.env.PORT ?? 4870);
-const host = flags.host ?? '127.0.0.1';
-const first = loadContract(manifest);
-const errs = first.diagnostics.filter((d) => d.level === 'error');
-if (errs.length) { printDiagnostics(first.diagnostics, base); console.log('\nThe contract has problems; the UI will show them and keep running.\n'); }
-const token = flags.token ?? process.env.SPRITE_ADMIN_TOKEN;
-const webhookUrl = flags.webhook ?? process.env.SPRITE_ADMIN_WEBHOOK;
-const webhook = webhookUrl ? { url: webhookUrl, token: flags['webhook-token'] ?? process.env.SPRITE_ADMIN_WEBHOOK_TOKEN } : undefined;
-createServer(manifest, { host, token, webhook }).listen(port, host, () => {
-  console.log(`Sprite admin for "${first.project?.name}" running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}\nContract: ${manifest}\nPlugin API: ${token ? 'enabled' : 'disabled (set --token)'}${webhook ? `, pushing images to ${webhook.url}` : ''}\nPress Ctrl+C to stop.`);
+const db = openDb(dbFile);
+const server = createServer({ db, token, webhook, publicFiles, host, maxUploadBytes: maxMb * 1024 * 1024 });
+server.listen(port, host, () => {
+  console.log(`Image Administration running at http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`);
+  console.log(`Database: ${dbFile}`);
+  console.log(generated ? `Admin token (generated, changes on every start; set ADMIN_TOKEN to keep one): ${token}` : 'Admin token: from ADMIN_TOKEN / --token');
+  console.log(`Webhook: ${webhook ? webhook.url : 'none'} · files served ${publicFiles ? 'publicly' : 'with token only'}`);
 }).on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? `Port ${port} is in use, try --port <n>` : e.message); process.exit(1); });
+
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { server.close(() => { db.close(); process.exit(0); }); setTimeout(() => process.exit(0), 3000).unref(); });

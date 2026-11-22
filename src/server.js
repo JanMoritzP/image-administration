@@ -2,15 +2,18 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadContract } from './contract.js';
-import { evaluateContract } from './status.js';
-import { acceptUpload, syncTargets, MAX_UPLOAD_BYTES } from './store.js';
+import { buildState } from './status.js';
+import { validateRequest } from './validate.js';
+import { applyRequest, deleteSprite, saveImage, getImage, listEvents, listHistory, DEFAULT_MAX_UPLOAD_BYTES } from './store.js';
 import { MIME } from './formats.js';
-import { probeImage } from './images.js';
-import { tokenOk, sha256, submitRequests, readEvents, appendEvent, createDelivery } from './integration.js';
+import { tokenOk, safeEqual, sessionCookieValue, createDelivery } from './integration.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const STATIC_MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
+const IMAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox"; // makes SVGs inert even when opened directly
+const JSON_LIMIT = 1024 * 1024;
+const COOKIE = 'sa_session';
+const SESSION_SECONDS = 30 * 24 * 3600;
 
 function send(res, status, body, headers = {}) {
   const isJson = typeof body !== 'string' && !Buffer.isBuffer(body);
@@ -21,27 +24,46 @@ function send(res, status, body, headers = {}) {
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0;
-    req.on('data', (c) => { size += c.length; if (size > limit) { reject(Object.assign(new Error('file is too large'), { status: 413 })); req.destroy(); } else chunks.push(c); });
+    req.on('data', (c) => { size += c.length; if (size > limit) { reject(Object.assign(new Error('request body is too large'), { status: 413 })); req.destroy(); } else chunks.push(c); });
     req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
 
-// Endpoints for the plugin / other servers. They need a bearer token and are disabled when none is configured.
-const PLUGIN_ROUTES = new Set(['/api/requests', '/api/events', '/api/file']);
-const JSON_LIMIT = 1024 * 1024;
+const parseCookies = (h) => Object.fromEntries((h ?? '').split(';').map((c) => c.trim().split(/=(.*)/s).slice(0, 2)).filter((p) => p[0]));
 
 /**
- * @param {string} input path to the manifest file or the directory that holds it
- * @param {{host?: string, token?: string, webhook?: {url: string, token?: string, retries?: number, baseDelayMs?: number}}} [opts]
- *   token: bearer token for the plugin API; webhook: where every delivered image is pushed to
+ * @param {object} o
+ * @param {import('node:sqlite').DatabaseSync} o.db
+ * @param {string} o.token        admin token: bearer token for the API, password for the UI (required)
+ * @param {{url:string, token?:string, retries?:number, baseDelayMs?:number}} [o.webhook] where uploaded images are pushed
+ * @param {boolean} [o.publicFiles]  serve GET /files/<path> without authentication
+ * @param {string} [o.host]
+ * @param {number} [o.maxUploadBytes]
  */
-export function createServer(input, { host = '127.0.0.1', token, webhook } = {}) {
+export function createServer({ db, token, webhook, publicFiles = false, host = '127.0.0.1', maxUploadBytes = DEFAULT_MAX_UPLOAD_BYTES }) {
+  if (!token) throw new Error('an admin token is required');
   const loopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
-  const fresh = () => loadContract(input);
   const delivery = webhook?.url ? createDelivery(webhook) : null;
-  const eventsFile = (c) => path.join(c.root, '.sprite-admin', 'events.jsonl');
-  const firstFile = (c, id) => c.sprites.find((s) => s.id === id)?.targets.find((t) => fs.existsSync(t.abs));
+  const session = sessionCookieValue(token);
+  const failures = new Map(); // ip -> {n, until} login throttle
+
+  /** 'bearer' | 'cookie' | null */
+  function authOf(req) {
+    if (tokenOk(req.headers.authorization, token)) return 'bearer';
+    const c = parseCookies(req.headers.cookie)[COOKIE];
+    if (c && safeEqual(c, session)) return 'cookie';
+    return null;
+  }
+  const secureCookie = (req) => req.headers['x-forwarded-proto'] === 'https' || !!req.socket.encrypted;
+  const cookie = (req, value, maxAge) => `${COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secureCookie(req) ? '; Secure' : ''}`;
+
+  function sendImage(req, res, img) {
+    const etag = `"${img.sha256}"`;
+    const headers = { 'Content-Type': MIME[img.format], 'Content-Security-Policy': IMAGE_CSP, ETag: etag, 'Cache-Control': 'no-cache', 'X-Sprite-Sha256': img.sha256 };
+    if (req.headers['if-none-match'] === etag) return send(res, 304, '', headers);
+    return send(res, 200, img.data, headers);
+  }
 
   return http.createServer(async (req, res) => {
     try {
@@ -49,76 +71,91 @@ export function createServer(input, { host = '127.0.0.1', token, webhook } = {})
       // DNS-rebinding guard when bound to loopback only.
       const hostName = (req.headers.host ?? '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
       if (loopback && !['localhost', '127.0.0.1', '::1'].includes(hostName)) return send(res, 403, { error: 'forbidden host' });
+      const route = `${req.method} ${url.pathname}`;
 
+      if (route === 'GET /healthz') return send(res, 200, { ok: true });
+
+      /* ----- images by path: GET /files/<path> ----- */
+      if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname.startsWith('/files/')) {
+        if (!publicFiles && !authOf(req)) return send(res, 401, { error: 'authentication required' }, { 'WWW-Authenticate': 'Bearer' });
+        let rel; try { rel = decodeURIComponent(url.pathname.slice('/files/'.length)); } catch { return send(res, 400, { error: 'bad path' }); }
+        const img = getImage(db, { path: rel });
+        return img ? sendImage(req, res, img) : send(res, 404, { error: 'no image at this path' });
+      }
+
+      /* ----- API ----- */
       if (url.pathname.startsWith('/api/')) {
-        if (PLUGIN_ROUTES.has(url.pathname)) {
-          if (!token) return send(res, 503, { error: 'plugin API is disabled: start the server with --token or SPRITE_ADMIN_TOKEN' });
-          if (!tokenOk(req.headers.authorization, token)) return send(res, 401, { error: 'missing or invalid bearer token' }, { 'WWW-Authenticate': 'Bearer' });
-        } else if (req.method === 'POST' && req.headers['x-sprite-admin'] !== '1') return send(res, 403, { error: 'missing X-Sprite-Admin header' });
+        if (route === 'POST /api/login') {
+          const ip = req.socket.remoteAddress ?? '?';
+          const f = failures.get(ip);
+          if (f && f.n >= 10 && Date.now() < f.until) return send(res, 429, { error: 'too many attempts, wait a minute' });
+          let body; try { body = JSON.parse((await readBody(req, 4096)).toString('utf8')); } catch (e) { if (e.status) throw e; body = {}; }
+          if (typeof body?.token === 'string' && safeEqual(body.token, token)) {
+            failures.delete(ip);
+            return send(res, 200, { ok: true }, { 'Set-Cookie': cookie(req, session, SESSION_SECONDS) });
+          }
+          failures.set(ip, { n: (f && Date.now() < f.until ? f.n : 0) + 1, until: Date.now() + 60_000 });
+          return send(res, 401, { error: 'wrong token' });
+        }
+        if (route === 'POST /api/logout') return send(res, 200, { ok: true }, { 'Set-Cookie': cookie(req, '', 0) });
+
+        const how = authOf(req);
+        if (!how) return send(res, 401, { error: 'missing or invalid token' }, { 'WWW-Authenticate': 'Bearer' });
+        // Cookies are sent by browsers automatically, so state-changing calls that rely on one need a header a cross-site page cannot set.
+        if (how === 'cookie' && req.method !== 'GET' && req.method !== 'HEAD' && req.headers['x-sprite-admin'] !== '1') return send(res, 403, { error: 'missing X-Sprite-Admin header' });
         const id = url.searchParams.get('id') ?? '';
 
-        if (req.method === 'GET' && url.pathname === '/api/state') {
-          const state = evaluateContract(fresh());
+        if (route === 'GET /api/state') {
+          const state = buildState(db);
           if (delivery) state.delivery = delivery.status();
           return send(res, 200, state);
         }
 
-        if (req.method === 'POST' && url.pathname === '/api/requests') {
-          const manifest = fresh().manifest;
-          if (!manifest) return send(res, 500, { ok: false, errors: ['no contract manifest'] });
+        if (route === 'POST /api/requests') {
           let payload;
-          try { payload = JSON.parse((await readBody(req, JSON_LIMIT)).toString('utf8')); } catch (e) { if (e.status) throw e; return send(res, 400, { ok: false, errors: ['body is not valid JSON'] }); }
-          const r = submitRequests(manifest, payload);
+          try { payload = JSON.parse((await readBody(req, JSON_LIMIT)).toString('utf8')); } catch (e) { if (e.status) throw e; return send(res, 400, { ok: false, errors: ['body is not valid JSON'], warnings: [] }); }
+          const v = validateRequest(payload);
+          if (v.errors.length) return send(res, 422, { ok: false, errors: v.errors, warnings: v.warnings });
+          const r = applyRequest(db, v);
+          return send(res, r.ok ? 200 : 422, { ...r, warnings: v.warnings });
+        }
+
+        if (route === 'DELETE /api/sprites') {
+          const r = deleteSprite(db, id);
           return send(res, r.status, r);
         }
 
-        if (req.method === 'GET' && url.pathname === '/api/events') {
-          const c = fresh();
-          if (!c.root) return send(res, 500, { error: 'contract could not be loaded' });
+        if (route === 'POST /api/upload') {
+          const buf = await readBody(req, maxUploadBytes);
+          const r = saveImage(db, id, buf, maxUploadBytes);
+          if (r.ok && delivery) delivery.deliver(r.event, buf, MIME[r.event.format]);
+          const { event, ...rest } = r;
+          return send(res, r.status, rest);
+        }
+
+        if (route === 'GET /api/file') {
+          const img = getImage(db, { id, history: Number(url.searchParams.get('history')) || undefined });
+          return img ? sendImage(req, res, img) : send(res, 404, { error: 'no image' });
+        }
+
+        if (route === 'GET /api/history') return send(res, 200, { versions: listHistory(db, id) });
+
+        if (route === 'GET /api/events') {
           const since = Math.max(0, Number(url.searchParams.get('since')) || 0);
           const limit = Math.min(1000, Math.max(1, Number(url.searchParams.get('limit')) || 100));
-          return send(res, 200, { events: readEvents(eventsFile(c), since, limit) });
-        }
-
-        if (req.method === 'GET' && url.pathname === '/api/file') {
-          const target = firstFile(fresh(), id);
-          if (!target) return send(res, 404, { error: 'no image' });
-          const buf = fs.readFileSync(target.abs);
-          return send(res, 200, buf, { 'Content-Type': MIME[target.format], 'X-Sprite-Sha256': sha256(buf), 'Content-Security-Policy': "default-src 'none'; sandbox" });
-        }
-
-        if (req.method === 'GET' && url.pathname === '/api/image') {
-          const target = firstFile(fresh(), id);
-          if (!target) return send(res, 404, { error: 'no image' });
-          return send(res, 200, fs.readFileSync(target.abs), { 'Content-Type': MIME[target.format], 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
-        }
-
-        if (req.method === 'POST' && url.pathname === '/api/upload') {
-          const buf = await readBody(req, MAX_UPLOAD_BYTES);
-          const c = fresh();
-          const r = acceptUpload(c, id, buf);
-          if (r.ok) {
-            const info = probeImage(buf);
-            const event = appendEvent(eventsFile(c), { type: 'image.delivered', id, format: info.format, width: info.width, height: info.height, bytes: buf.length, sha256: sha256(buf), targets: c.sprites.find((s) => s.id === id).targets.map((t) => t.path) });
-            delivery?.deliver(event, buf, MIME[info.format]);
-          }
-          return send(res, r.status, r);
-        }
-
-        if (req.method === 'POST' && url.pathname === '/api/sync') {
-          const r = syncTargets(fresh(), id);
-          return send(res, r.status, r);
+          return send(res, 200, { events: listEvents(db, since, limit) });
         }
         return send(res, 404, { error: 'not found' });
       }
 
-      // static files
+      /* ----- the admin UI (static, contains no data) ----- */
+      if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' });
       const rel = url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname.slice(1));
       const file = path.resolve(PUBLIC_DIR, rel);
       if (!file.startsWith(PUBLIC_DIR + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return send(res, 404, 'Not found', { 'Content-Type': 'text/plain' });
       return send(res, 200, fs.readFileSync(file), { 'Content-Type': STATIC_MIME[path.extname(file)] ?? 'application/octet-stream' });
     } catch (e) {
-      return send(res, e.status ?? 500, { ok: false, errors: [e.message ?? 'server error'] });
+      return send(res, e.status ?? 500, { ok: false, errors: [e.status ? e.message : 'server error'] });
     }
   });
 }

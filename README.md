@@ -1,92 +1,60 @@
 # Image Administration
 
-A **standard** (the *Sprite Contract*) plus a small tool for it:
+A small server that sits between an application (or a plugin that scrapes one) and the people who make its images.
 
-* Your application declares the images it needs in YAML/JSON files: a description of each, size and format rules, and **where each file must be delivered**.
-* `sprite-admin` reads those files, shows what is **missing / available / invalid** with progress bars per folder, and lets you **upload** images.
-  Uploads are validated against the contract and copied to every target path it names.
+1. **A plugin requests images over HTTP**: what each image shows, its exact size and format, and the paths it is served under.
+2. **People upload them** in the web UI. Wrong size? A built-in editor scales and positions the image to fit the frame.
+3. **Everything is stored in one SQLite database**: project data, requests, paths and the image bytes.
+4. **Images go back to the plugin**: pushed by webhook the moment they are uploaded, or fetched on demand. Any image can also be served by path (`GET /files/site/banner.jpg`).
 
-No image editor, no database, no build step. The app only loads files from the paths it declared; the file system is the source of truth.
+There are no contract files: the HTTP API is the only way to describe what is needed. No npm dependencies either, just Node's built-in modules (Node ≥ 22.13).
 
-![Status: folder tree, progress bar and sprite cards](docs/screenshot.png)
-
-## Quick start
-
-```bash
-npm install
-npm run demo                              # opens the Dungeon Dash example at http://127.0.0.1:4870
-```
-
-For your own project:
+## Run it with Docker
 
 ```bash
-node bin/sprite-admin.js init ../my-app   # scaffolds ../my-app/sprites.contract.yml
-# edit it (or have an AI write it with docs/AI_AUTHORING_GUIDE.md), then:
-node bin/sprite-admin.js validate ../my-app
-node bin/sprite-admin.js serve ../my-app  # --port 4870 --host 127.0.0.1
+export ADMIN_TOKEN=$(openssl rand -hex 24)     # password of the UI and bearer token of the API
+export WEBHOOK_URL=http://plugin-host:9000/images   # optional: where uploaded images are pushed
+docker compose up -d --build
 ```
 
-(`npm link` gives you a global `sprite-admin` command.)
+UI and API: <http://localhost:4870> (put a TLS reverse proxy in front for anything beyond a trusted network).
+The database lives in the `image-admin-data` volume (`/data/image-admin.db`). **Back it up**; it contains every image.
 
-## What you get
+| Environment variable | Meaning | Default |
+|----------------------|---------|---------|
+| `ADMIN_TOKEN` | UI password and API bearer token. **Set it**; without one a random token is generated at every start. | generated |
+| `WEBHOOK_URL`, `WEBHOOK_TOKEN` | Every uploaded image is POSTed here (with `Authorization: Bearer <WEBHOOK_TOKEN>`). | off |
+| `PUBLIC_FILES` | `1` = `GET /files/<path>` needs no token (for apps that load the images directly). The API always needs the token. | `0` |
+| `MAX_UPLOAD_MB` | Largest accepted image. | `50` |
+| `PORT`, `HOST`, `DATA_DIR` | Listen port/address and the folder that holds the database. | `4870`, `0.0.0.0` (image), `/data` |
 
-* **Folder tree** derived from sprite ids (`characters/hero/idle`), with a progress bar per folder and overall.
-* **Cards** for each sprite: thumbnail on a checkerboard, description, requirement chips (`32×32px · PNG · transparent`), every target with ✓ / ○ / ✕.
-* **Fit to frame**: when an image is not exactly the size a sprite requires, a small editor opens (scale, move, fit/fill/stretch, crisp-pixel or smooth) and uploads the result at the exact size. It runs in the browser, so no extra dependencies.
-* **Upload** per card (button or drag-and-drop) or **bulk drop** of many files, auto-matched by file name.
-* **Validation before delivery**: size, aspect, format, transparency, file size, real file type. Rejections explain exactly why and write nothing.
-* **Multi-target delivery**: one upload is written to all target paths. Overwritten files are backed up to `<root>/.sprite-admin/backups/`.
-* **Live**: the contract is re-read continuously, so edits (by you or an AI) appear within seconds.
-* **CLI for AIs and CI**: `validate`, `status --json`, `status --missing`, `status --check`.
+With a bind mount instead of the named volume, make the folder writable for the container user (`chown 1000:1000`).
 
-## The contract in 20 lines
+## Run it without Docker
 
-```yaml
-contract: "1.0"
-project: { name: Dungeon Dash, description: "16-bit pixel art, top-down.", root: game }
-include: [contracts/*.yml, contracts/*.json]       # several files, YAML and JSON mixed
-defaults: { spec: { alpha: required, formats: [png] } }
-folders:
-  characters: { title: Characters, icon: "🧙", defaults: { spec: { width: 32, height: 32 } } }
-sprites:
-  - id: characters/hero/walk-{dir}-{frame:02}      # matrix: 4 x 4 = 16 sprites
-    description: The hero (short wizard, blue hat, brown cloak) walking {dir}, frame {frame} of 4.
-    matrix: { dir: [down, up, left, right], frame: "0..3" }
-    target: characters/hero/walk_{dir}_{frame:02}.png
+```bash
+ADMIN_TOKEN=secret npm start        # http://127.0.0.1:4870, database in ./data
+npm test
 ```
+
+## First request
+
+```bash
+curl -X POST http://localhost:4870/api/requests -H "Authorization: Bearer $ADMIN_TOKEN" -d '{
+  "project": { "name": "Harbour Shop" },
+  "sprites": [{ "id": "shop/banner", "description": "Homepage banner: harbour at sunset.",
+                "spec": { "width": 1200, "height": 400, "formats": ["jpg"] }, "target": "site/banner.jpg" }] }'
+```
+
+Open the UI, log in with the token, upload an image for "Banner". It is validated, stored, pushed to the webhook, and available at `/files/site/banner.jpg`.
+
+## Documents
 
 | Document | For |
 |----------|-----|
-| [docs/CONTRACT.md](docs/CONTRACT.md) | The complete specification: every field, inheritance, matrix, targets, diagnostics, report format, HTTP API. |
-| [docs/PLUGIN_REWRITE.md](docs/PLUGIN_REWRITE.md) | One-page read-up for (re)writing a plugin against the HTTP API. |
-| [docs/PLUGIN_INTEGRATION.md](docs/PLUGIN_INTEGRATION.md) | HTTP API for plugins/other servers: request images, receive uploaded images by webhook, catch up by polling. |
-| [docs/AI_AUTHORING_GUIDE.md](docs/AI_AUTHORING_GUIDE.md) | Step-by-step guide and checklist for AI agents/scripts that write or maintain a contract. |
-| [schema/sprite-contract.schema.json](schema/sprite-contract.schema.json) | JSON Schema for editor completion/validation of any contract file. |
-| [examples/dungeon-dash](examples/dungeon-dash) | A complete, multi-file demo (4 files, 30 sprites, partly filled). |
+| [docs/API.md](docs/API.md) | Complete HTTP API reference: requests, spec fields, webhook, events, files, errors. |
+| [docs/PLUGIN_REWRITE.md](docs/PLUGIN_REWRITE.md) | One-page read-up for (re)writing the plugin against this API. |
 
-## Why several files?
+## Layout
 
-A single manifest stays small: project info, shared defaults, and an `include` list. Everything else is split by domain or owner.
-A new file dropped into `contracts/` is picked up automatically, and each file can have its own `defaults`, so a tiles file says "16×16, opaque" once.
-Because every file is a self-contained document, several people or AI agents can extend the contract in parallel without merge conflicts.
-
-## Commands
-
-```
-sprite-admin [serve] [contract] [--port 4870] [--host 127.0.0.1]
-sprite-admin validate [contract]            exit 1 on contract errors
-sprite-admin status [contract] [--json] [--missing] [--check]
-sprite-admin init [dir]
-```
-
-## Security notes
-
-The server listens on `127.0.0.1` only by default, rejects foreign `Host` headers (DNS rebinding) and requires an `X-Sprite-Admin` header on writes (CSRF).
-Targets can never leave the project root. Do not expose it to untrusted networks: there is no authentication.
-
-## Development
-
-```bash
-npm test          # contract loader, image probing, HTTP API end-to-end
-npm run demo:reset  # regenerate the demo art
-```
+`src/` server (`server.js`), SQLite schema (`db.js`), request validation (`validate.js`), storage (`store.js`), status report (`status.js`), image inspection (`images.js`, `png.js`), webhook + auth (`integration.js`) · `public/` the web UI incl. the fit editor (`fit.js`) · `test/` · `Dockerfile`, `docker-compose.yml`.
