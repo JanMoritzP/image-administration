@@ -1,3 +1,5 @@
+import { frameOf, outputFormat, loadImage, openFitEditor } from './fit.js';
+
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const API_HEADERS = { 'X-Sprite-Admin': '1' };
@@ -27,6 +29,27 @@ async function upload(id, file) {
     return j.ok;
   } catch (e) { toast('Upload failed: ' + esc(e.message), 'bad'); }
   finally { busy.delete(id); await refresh(true); }
+}
+
+/** Upload through the fit editor when the image does not already have the exact size the sprite requires. */
+async function startUpload(id, file) {
+  const sp = state.sprites.find((x) => x.id === id);
+  const frame = sp && frameOf(sp.spec), format = sp && outputFormat(sp);
+  if (frame && format) {
+    let loaded = null;
+    try { loaded = await loadImage(file); } catch { /* let the server explain what is wrong with the file */ }
+    if (loaded) {
+      try {
+        const { img } = loaded;
+        if (img.naturalWidth !== frame.w || img.naturalHeight !== frame.h) {
+          const fitted = await openFitEditor({ file, img, frame, format, opaque: sp.spec.alpha === 'forbidden', title: sp.title });
+          if (!fitted) return false;
+          file = fitted;
+        }
+      } finally { URL.revokeObjectURL(loaded.url); }
+    }
+  }
+  return upload(id, file);
 }
 
 async function sync(id) {
@@ -160,7 +183,7 @@ document.addEventListener('click', (e) => {
   else if (t.dataset.sync) sync(t.dataset.sync);
 });
 $('#search').addEventListener('input', (e) => { query = e.target.value; render(); });
-$('#picker').addEventListener('change', (e) => { const f = e.target.files[0]; if (f && pickFor) upload(pickFor, f); });
+$('#picker').addEventListener('change', (e) => { const f = e.target.files[0]; if (f && pickFor) startUpload(pickFor, f); });
 
 let dragDepth = 0;
 const hasFiles = (e) => [...(e.dataTransfer?.types ?? [])].includes('Files');
@@ -173,7 +196,7 @@ window.addEventListener('drop', async (e) => {
   document.querySelectorAll('.card.drag').forEach((c) => c.classList.remove('drag'));
   const files = [...e.dataTransfer.files].filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(f.name));
   const card = e.target.closest?.('.card');
-  if (card) { if (files[0]) await upload(card.dataset.id, files[0]); if (files.length > 1) toast('Only the first file was used; drop several files outside a card to auto-match them.', 'warn'); return; }
+  if (card) { if (files[0]) await startUpload(card.dataset.id, files[0]); if (files.length > 1) toast('Only the first file was used; drop several files outside a card to auto-match them.', 'warn'); return; }
   await bulk(files);
 });
 
@@ -183,7 +206,7 @@ async function bulk(files) {
   for (const f of files) {
     const s = stem(f.name);
     const hits = state.sprites.filter((sp) => [sp.name, sp.id, sp.id.replaceAll('/', '_'), sp.id.replaceAll('/', '-'), ...sp.targets.map((t) => stem(t.path.split('/').pop()))].some((c) => c.toLowerCase() === s));
-    if (hits.length === 1) { if (await upload(hits[0].id, f)) ok++; }
+    if (hits.length === 1) { if (await startUpload(hits[0].id, f)) ok++; }
     else problems.push(`${f.name}: ${hits.length ? `ambiguous (${hits.length} sprites match, drop it onto the right card)` : 'no sprite matches this file name'}`);
   }
   if (files.length > 1 || problems.length) toast(`${ok}/${files.length} files delivered`, problems.length ? 'warn' : 'ok', problems);

@@ -54,7 +54,8 @@ After every valid upload the server sends `POST <webhook>` with the **raw image 
 | `X-Sprite-Id` | sprite id, e.g. `shop/banner` |
 | `X-Sprite-Seq` | event number (see events below) |
 | `X-Sprite-Sha256` | hex SHA-256 of the body |
-| `X-Sprite-Format` | `png`, `jpeg`, … |
+| `X-Sprite-Format` | `png`, `jpg`, `webp`, `gif`, `svg` |
+| `X-Sprite-Width`, `X-Sprite-Height` | pixel size of the image (omitted when it cannot be read, e.g. an SVG without size) |
 
 Any `2xx` counts as delivered. Network errors, timeouts (15 s), `5xx`, `408` and `429` are retried with backoff
 (1 s, 2 s, 4 s, 8 s, 5 attempts). Other `4xx` mean "rejected": no retry. The upload itself never fails because of the webhook.
@@ -67,7 +68,7 @@ Delivery state and retries live in memory: after a restart or a `failed` push, u
 
 ```json
 { "events": [ { "seq": 7, "at": "2026-…Z", "type": "image.delivered", "id": "shop/banner",
-                "format": "png", "bytes": 12345, "sha256": "…", "targets": ["shop/banner.png"] } ] }
+                "format": "png", "width": 1200, "height": 400, "bytes": 12345, "sha256": "…", "targets": ["shop/banner.png"] } ] }
 ```
 
 Events are persisted in `<project root>/.sprite-admin/events.jsonl`. Remember the highest `seq` you processed and pass it as `since`.

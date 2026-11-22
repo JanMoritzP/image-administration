@@ -99,7 +99,7 @@ export function createServer(input, { host = '127.0.0.1', token, webhook } = {})
           const r = acceptUpload(c, id, buf);
           if (r.ok) {
             const info = probeImage(buf);
-            const event = appendEvent(eventsFile(c), { type: 'image.delivered', id, format: info.format, bytes: buf.length, sha256: sha256(buf), targets: c.sprites.find((s) => s.id === id).targets.map((t) => t.path) });
+            const event = appendEvent(eventsFile(c), { type: 'image.delivered', id, format: info.format, width: info.width, height: info.height, bytes: buf.length, sha256: sha256(buf), targets: c.sprites.find((s) => s.id === id).targets.map((t) => t.path) });
             delivery?.deliver(event, buf, MIME[info.format]);
           }
           return send(res, r.status, r);

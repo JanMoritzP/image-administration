@@ -32,6 +32,7 @@ node bin/sprite-admin.js serve ../my-app  # --port 4870 --host 127.0.0.1
 
 * **Folder tree** derived from sprite ids (`characters/hero/idle`), with a progress bar per folder and overall.
 * **Cards** for each sprite: thumbnail on a checkerboard, description, requirement chips (`32×32px · PNG · transparent`), every target with ✓ / ○ / ✕.
+* **Fit to frame**: when an image is not exactly the size a sprite requires, a small editor opens (scale, move, fit/fill/stretch, crisp-pixel or smooth) and uploads the result at the exact size. It runs in the browser, so no extra dependencies.
 * **Upload** per card (button or drag-and-drop) or **bulk drop** of many files, auto-matched by file name.
 * **Validation before delivery**: size, aspect, format, transparency, file size, real file type. Rejections explain exactly why and write nothing.
 * **Multi-target delivery**: one upload is written to all target paths. Overwritten files are backed up to `<root>/.sprite-admin/backups/`.

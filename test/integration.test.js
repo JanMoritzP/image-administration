@@ -124,6 +124,7 @@ test('uploads are logged as events (pollable with since) and files can be fetche
   const { events } = await (await t.plugin('/api/events')).json();
   assert.deepEqual(events.map((e) => [e.seq, e.id, e.type]), [[1, 'shop/a', 'image.delivered'], [2, 'manual/one', 'image.delivered']]);
   assert.equal(events[0].sha256, sha256(bytes));
+  assert.deepEqual([events[0].format, events[0].width, events[0].height], ['png', 8, 8]);
   assert.deepEqual(events[0].targets, ['shop/a.png']);
   assert.deepEqual((await (await t.plugin('/api/events?since=1')).json()).events.map((e) => e.seq), [2]);
 
@@ -155,6 +156,9 @@ test('webhook receives the image bytes with metadata and the state reports deliv
   assert.equal(call.headers['x-sprite-id'], 'shop/a');
   assert.equal(call.headers['x-sprite-seq'], '1');
   assert.equal(call.headers['x-sprite-sha256'], sha256(bytes));
+  assert.equal(call.headers['x-sprite-format'], 'png');
+  assert.equal(call.headers['x-sprite-width'], '8');
+  assert.equal(call.headers['x-sprite-height'], '8');
 
   const d = await until(async () => { const st = await (await t.ui('/api/state')).json(); return st.delivery?.['shop/a']?.status === 'delivered' && st.delivery['shop/a']; });
   assert.equal(d.attempts, 1);

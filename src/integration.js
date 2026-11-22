@@ -105,6 +105,7 @@ export function createDelivery({ url, token, retries = 5, baseDelayMs = 1000, ti
       'X-Sprite-Seq': String(event.seq),
       'X-Sprite-Sha256': event.sha256,
       'X-Sprite-Format': event.format,
+      ...(event.width != null && event.height != null ? { 'X-Sprite-Width': String(event.width), 'X-Sprite-Height': String(event.height) } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     };
     for (let i = 0; i < retries; i++) {
