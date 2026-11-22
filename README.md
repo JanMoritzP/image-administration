@@ -58,6 +58,7 @@ sprites:
 | Document | For |
 |----------|-----|
 | [docs/CONTRACT.md](docs/CONTRACT.md) | The complete specification: every field, inheritance, matrix, targets, diagnostics, report format, HTTP API. |
+| [docs/PLUGIN_REWRITE.md](docs/PLUGIN_REWRITE.md) | One-page read-up for (re)writing a plugin against the HTTP API. |
 | [docs/PLUGIN_INTEGRATION.md](docs/PLUGIN_INTEGRATION.md) | HTTP API for plugins/other servers: request images, receive uploaded images by webhook, catch up by polling. |
 | [docs/AI_AUTHORING_GUIDE.md](docs/AI_AUTHORING_GUIDE.md) | Step-by-step guide and checklist for AI agents/scripts that write or maintain a contract. |
 | [schema/sprite-contract.schema.json](schema/sprite-contract.schema.json) | JSON Schema for editor completion/validation of any contract file. |
