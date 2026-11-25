@@ -174,12 +174,13 @@ function card(sp) {
 
 /* ---------- events ---------- */
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-folder],[data-filter],[data-upload],[data-logout]');
+  const t = e.target.closest('[data-folder],[data-filter],[data-upload],[data-logout],[data-wipe]');
   if (!t) return;
   if (t.dataset.folder !== undefined) { folder = t.dataset.folder; render(); }
   else if (t.dataset.filter) { filter = t.dataset.filter; render(); }
   else if (t.dataset.upload) { pickFor = t.dataset.upload; $('#picker').value = ''; $('#picker').click(); }
   else if (t.dataset.logout !== undefined) logout();
+  else if (t.dataset.wipe !== undefined) wipeProject();
 });
 $('#projectSelect').addEventListener('change', (e) => { projectId = e.target.value; localStorage.setItem('project', projectId); folder = ''; state = null; lastJson = ''; refresh(true); });
 $('#search').addEventListener('input', (e) => { query = e.target.value; render(); });
@@ -221,6 +222,16 @@ $('#loginForm').addEventListener('submit', async (e) => {
   $('#loginError').textContent = r.ok ? '' : r.status === 429 ? 'Too many attempts, wait a minute.' : 'Wrong token.';
   if (r.ok) { $('#loginToken').value = ''; await refresh(true); }
 });
+async function wipeProject() {
+  const name = state?.project?.name ?? projectId;
+  const what = projectId === 'default' ? 'empties it completely' : 'deletes it';
+  if (!confirm(`Wipe "${name}"?\n\nThis ${what}: every sprite, image, history entry and path is gone and cannot be restored. The project has to be recreated by a new request from the plugin.`)) return;
+  const r = await fetch(inProject(`/api/projects?id=${encodeURIComponent(projectId)}`), { method: 'DELETE', headers: API_HEADERS });
+  if (!r.ok) { toast('Could not wipe the project', 'bad'); return; }
+  toast(`Wiped <b>${esc(name)}</b>`, 'ok');
+  folder = ''; state = null; lastJson = '';
+  await refresh(true);
+}
 async function logout() { await fetch('/api/logout', { method: 'POST', headers: API_HEADERS }); state = null; lastJson = ''; showLogin(); }
 
 refresh(true);

@@ -2,7 +2,7 @@
 // events) and can be backed up or deleted one by one. The "default" project is the database the server was started with.
 import fs from 'node:fs';
 import path from 'node:path';
-import { openDb } from './db.js';
+import { openDb, tx } from './db.js';
 
 export const DEFAULT_PROJECT = 'default';
 /** Lower-case letters, digits and dashes: it is used in file names and URLs. */
@@ -41,6 +41,20 @@ export function createProjects({ db, dir = null }) {
       open.delete(id);
       d.close();
       if (dir) for (const ext of ['', '-wal', '-shm']) fs.rmSync(file(id) + ext, { force: true });
+      return true;
+    },
+    /**
+     * Wipes a project completely: sprites, folders, paths, images, history, events and the project's name/description.
+     * Another project is deleted outright (it is recreated by a request that names it); the default project cannot
+     * disappear, so it is emptied instead. Event numbers keep counting, so a plugin polling with `since` still sees
+     * everything that happens after the wipe. Returns false for an unknown project.
+     */
+    wipe(id) {
+      const d = open.get(id);
+      if (!d) return false;
+      if (id !== DEFAULT_PROJECT) return this.remove(id);
+      tx(d, () => { for (const t of ['image_history', 'images', 'targets', 'sprites', 'folders', 'events', 'meta']) d.exec(`DELETE FROM ${t}`); });
+      try { d.exec('VACUUM'); } catch { /* the space is reused anyway */ }
       return true;
     },
     close() { for (const [id, d] of open) if (id !== DEFAULT_PROJECT) d.close(); },

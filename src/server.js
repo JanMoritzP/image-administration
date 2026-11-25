@@ -123,10 +123,10 @@ export function createServer({ db, token, webhook, publicFiles = false, host = '
           return send(res, 200, { projects: projects.ids().map((p) => { const s = buildState(projects.get(p), p); return { id: p, name: s.project.name, description: s.project.description, ...s.summary }; }) });
         }
         if (route === 'DELETE /api/projects') {
-          if (id === DEFAULT_PROJECT) return send(res, 400, { ok: false, errors: ['the default project cannot be deleted'] });
-          if (!projects.remove(id)) return send(res, 404, { ok: false, errors: [`unknown project "${id}"`] });
+          // deletes a project with everything in it; the default project is wiped empty instead
+          if (!projects.wipe(id)) return send(res, 404, { ok: false, errors: [`unknown project "${id}"`] });
           deliveries.delete(id);
-          return send(res, 200, { ok: true });
+          return send(res, 200, { ok: true, project: id, wiped: id === DEFAULT_PROJECT });
         }
 
         if (route === 'POST /api/requests') {

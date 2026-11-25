@@ -66,6 +66,7 @@ h1{font-size:18px;margin:0}.brand p{margin:0;color:var(--dim);max-width:60ch}
 .actions{margin-top:auto;display:flex;gap:8px;padding-top:4px}
 .btn{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:6px 12px}
 .btn:hover{border-color:var(--accent)}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.danger:hover{border-color:var(--warn);color:var(--warn)}
 .btn:disabled{opacity:.5;cursor:wait}
 .hint{color:var(--dim);margin-top:20px}
 .empty-state{grid-column:1/-1;text-align:center;color:var(--dim);padding:40px}

@@ -6,7 +6,7 @@ Base URL e.g. `http://admin-host:4870`. Everything under `/api` needs `Authoriza
 |---------------|---------|
 | `POST /api/requests` | Request images (add/replace sprites, folders, project info). With `project.id` it creates/uses that project. |
 | `GET /api/projects` | All projects with name and progress. |
-| `DELETE /api/projects?id=` | Delete a project with all its images (not `default`). |
+| `DELETE /api/projects?id=` | Wipe a project completely: another project is deleted, `default` is emptied (all sprites, images, history, events, name). The next request from the plugin recreates it. |
 | `DELETE /api/sprites?id=` | Remove a sprite with its image and paths. |
 | `POST /api/upload?id=` | Body = raw image bytes. Validates and stores the image. (This is what the UI does.) |
 | `GET /api/state` | Everything: project, folders, sprites with status, image info, webhook delivery state. |
@@ -22,6 +22,7 @@ Every project is a separate set of sprites, target paths, image history and even
 
 * **Create:** send `"project": { "id": "harbour-shop", "name": "Harbour Shop" }` in `POST /api/requests`. The id is lower-case letters, digits and dashes (at most 63). A refused request leaves no project behind.
 * **Choose:** every other call takes `?project=<id>` (or an `X-Project` header). Without it the call is about `default`. An unknown project is `404`.
+* **Wipe:** `DELETE /api/projects?id=<id>` removes everything. Other projects disappear until a request names them again; `default` stays but is empty. Event numbers of `default` keep counting, so a polling plugin does not miss events after the wipe. Cannot be undone.
 * **Events** are counted per project: each project has its own `seq` starting at 1, and every event carries `project`. Keep one `since` per project.
 * **Files:** `GET /files/<path>` serves the `default` project, `GET /files/<project>/<path>` another one.
 * **Webhook:** the header `X-Sprite-Project` names the project (`default` for the default one); `X-Sprite-Seq` is that project's event number.

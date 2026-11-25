@@ -80,10 +80,37 @@ test('unknown projects are refused, a bad id is a 422, a refused request leaves 
 test('the default project is the one without a name, and a project can be deleted', async () => {
   const t = await boot();
   await t.post({ project: { id: 'old', name: 'Old' }, sprites: [sprite('a')] });
-  assert.equal((await t.api('/api/projects?id=default', { method: 'DELETE' })).status, 400);
   assert.equal((await t.api('/api/projects?id=old', { method: 'DELETE' })).status, 200);
   assert.equal((await t.api('/api/state?project=old')).status, 404);
   assert.equal((await t.api('/api/projects?id=old', { method: 'DELETE' })).status, 404);
+  await t.close();
+});
+
+test('the default project is wiped empty, so a plugin has to recreate it', async () => {
+  const t = await boot();
+  await t.post({ project: { name: 'Mine', description: 'D' }, folders: { f: { title: 'F' } }, sprites: [sprite('a'), sprite('f/b')] });
+  await t.upload('a', png());
+  await t.upload('a', png(8, 8, [1, 2, 3, 255])); // history
+  await t.post({ project: { id: 'other' }, sprites: [sprite('x')] });
+  const before = (await json(await t.api('/api/events?since=0'))).events.at(-1).seq;
+
+  const r = await t.api('/api/projects?id=default', { method: 'DELETE' });
+  assert.equal(r.status, 200);
+  assert.equal((await json(r)).wiped, true);
+  const s = await t.state();
+  assert.equal(s.sprites.length, 0);
+  assert.equal(s.folders.length, 0);
+  assert.equal(s.project.name, 'Image Administration');
+  assert.equal(s.project.description, '');
+  assert.equal((await t.api('/files/a.png')).status, 404);
+  assert.deepEqual((await json(await t.api('/api/events?since=0'))).events, []);
+  for (const table of ['sprites', 'folders', 'targets', 'images', 'image_history', 'events', 'meta']) assert.equal(t.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n, 0, table);
+  assert.equal((await json(await t.api('/api/state?project=other'))).sprites.length, 1); // other projects are untouched
+
+  // recreating works, and event numbers keep counting
+  await t.post({ sprites: [sprite('a')] });
+  await t.upload('a', png());
+  assert.ok((await json(await t.api('/api/events?since=0'))).events[0].seq > before);
   await t.close();
 });
 
